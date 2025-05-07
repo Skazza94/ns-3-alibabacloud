@@ -60,14 +60,13 @@ class RdmaHw : public Object {
                               // server, then communicate by nvswitch.
   uint32_t nvls_enable;
   std::set<uint32_t> nvswitch_set;
-
   // qp complete callback
   typedef Callback<void, Ptr<RdmaQueuePair>> QpCompleteCallback;
   QpCompleteCallback m_qpCompleteCallback;
-  typedef Callback<void, Ptr<RdmaQueuePair>> SendCompleteCallback;
+  typedef Callback<void, Ptr<RdmaQueuePair>,uint64_t,uint64_t> SendCompleteCallback;
   SendCompleteCallback m_sendCompleteCallback;
 
-  typedef Callback<void, Ptr<RdmaQueuePair>, uint64_t> MessageCompleteCallback;
+  typedef Callback<void, Ptr<RdmaQueuePair>, uint64_t,uint64_t> MessageCompleteCallback;
   MessageCompleteCallback m_messageCompleteCallback; //the first message of the qp complete callback
 
   // for monitor

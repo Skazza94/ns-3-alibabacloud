@@ -150,10 +150,12 @@ void RdmaQueuePair::UpdateRate() {
 
 void RdmaQueuePair::PushMessage(
     uint64_t size,
+    uint64_t curr_flow_num, 
     Callback<void> notifyAppFinish,
     Callback<void> notifyAppSent) {
   RdmaMessage msg;
   msg.m_size = size;
+  msg.m_cur_id = curr_flow_num;
   if(m_messages.empty()) {
     msg.m_startSeq = snd_nxt; // there are no old messages in the queue, so set start_seq to snd_nxt
   } else {

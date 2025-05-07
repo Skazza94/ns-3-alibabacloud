@@ -233,17 +233,15 @@ Ptr<RdmaQueuePair> RdmaHw::AddQueuePair(
   qp->SetTag(tag);
   qp->SetWin(win);
   qp->SetBaseRtt(baseRtt);
-  qp->SetVarWin(m_var_win);
-  
+  qp->SetVarWin(m_var_win);   
   if(size != 0){
-    qp->PushMessage(size, notifyAppFinish, notifyAppSent);
+    qp->PushMessage(size, 0, notifyAppFinish, notifyAppSent);
   }
   // add qp
   uint32_t nic_idx = GetNicIdxOfQp(qp);
 
-  // std::cout << "src is: " << src << ", dst is: " << dest <<  ", nic_idx: " <<
-  // nic_idx << ", and the m_nic size is: " << m_nic.size() << std::endl; Assign
-  // the qp to specific qbbnetdevice
+
+  //Assign the qp to specific qbbnetdevice
   m_nic[nic_idx].qpGrp->AddQp(qp);
   uint64_t key = GetQpKey(dip.Get(), sport, pg);
   m_qpMap[key] = qp;
@@ -435,8 +433,8 @@ int RdmaHw::SendPacketComplete(Ptr<Packet> p, CustomHeader& ch) {
 
 void RdmaHw::SendComplete(Ptr<RdmaQueuePair> qp) {
   NS_ASSERT(!m_sendCompleteCallback.IsNull());
-
-  m_sendCompleteCallback(qp);
+  RdmaQueuePair::RdmaMessage msg = qp->m_messages.front();
+  m_sendCompleteCallback(qp,msg.m_size, msg.m_cur_id);
 }
 
 int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader& ch) {
@@ -697,7 +695,7 @@ void RdmaHw::QpComplete(Ptr<RdmaQueuePair> qp) {
     }
     
   }
-
+  std::cout << "IN QpComplete" << std::endl;
   // This callback will log info
   // It may also delete the rxQp on the receiver
   m_qpCompleteCallback(qp);
@@ -713,7 +711,7 @@ void RdmaHw::QpCompleteMessage(Ptr<RdmaQueuePair> qp) {
   // callback
   RdmaQueuePair::RdmaMessage msg = qp->m_messages.front();
   qp->FinishMessage();
-  m_messageCompleteCallback(qp, msg.m_size);
+  m_messageCompleteCallback(qp, msg.m_size, msg.m_cur_id);
   if(!qp->m_messages.empty()){
     // Have more messages to send
     // std::cout<<"at "<<Simulator::Now().GetTimeStep()<<"ns, qp src:"<<qp->m_src<<" dst:"<<qp->m_dest<<" port:"<<qp->sport<<" dport:"<<qp->dport<<" has more messages to send\n";

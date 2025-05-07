@@ -115,9 +115,10 @@ void RdmaClient::SetSize(uint64_t size) { m_size = size; }
 void RdmaClient::Sent() {
 }
 
-void RdmaClient::PushMessagetoQp(uint64_t size) {
+void RdmaClient::PushMessagetoQp(uint64_t size, uint64_t curr_flow_num) {
   m_qp->PushMessage(
       size,
+      curr_flow_num,
       MakeCallback(&RdmaClient::Finish, this),
       MakeCallback(&RdmaClient::Sent, this));
 

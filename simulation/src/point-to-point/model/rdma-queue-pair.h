@@ -9,6 +9,7 @@
 #include <ns3/object.h>
 #include <ns3/packet.h>
 #include <queue>
+#include <mutex>
 #include <vector>
 #include <math.h>
 #include "rdma-congestion-ops.h"
@@ -113,12 +114,14 @@ class RdmaQueuePair : public Object {
   class RdmaMessage {
    public:
     uint64_t m_size;
+    uint64_t m_cur_id;
     uint64_t m_startSeq;
     Callback<void> m_notifyAppFinish;
     Callback<void> m_notifyAppSent;
   };
   std::queue<RdmaMessage> m_messages;
-  void PushMessage(uint64_t size, Callback<void> notifyAppFinish, Callback<void> notifyAppSent);
+  std::mutex m_mutex;
+  void PushMessage(uint64_t size, uint64_t m_cur_id, Callback<void> notifyAppFinish, Callback<void> notifyAppSent);
   void FinishMessage();
 
   bool IsCurMessageFinished();

@@ -71,7 +71,7 @@ public:
   /**
    * \brief call this function to push message to qp
    */
-  void PushMessagetoQp(uint64_t size);
+  void PushMessagetoQp(uint64_t size,uint64_t curr_flow_num);
   /**
    * \brief call this function to finish the qp
    */

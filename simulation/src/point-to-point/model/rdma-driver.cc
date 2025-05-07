@@ -93,10 +93,10 @@ void RdmaDriver::QpComplete(Ptr<RdmaQueuePair> q){
 	m_traceQpComplete(q);
 }
 
-void RdmaDriver::SendComplete(Ptr<RdmaQueuePair> q){
-    m_traceSendComplete(q);
+void RdmaDriver::SendComplete(Ptr<RdmaQueuePair> q, uint64_t size, uint64_t curr_flow_id){
+    m_traceSendComplete(q, size, curr_flow_id);
 }
-void RdmaDriver::MessageComplete(Ptr<RdmaQueuePair> q, uint64_t size) {
-	m_traceMessageComplete(q, size);
+void RdmaDriver::MessageComplete(Ptr<RdmaQueuePair> q, uint64_t size, uint64_t curr_flow_id) {
+	m_traceMessageComplete(q, size, curr_flow_id);
 }
 } // namespace ns3
