@@ -11,6 +11,8 @@
 #include "ppp-header.h"
 #include "ns3/int-header.h"
 #include "ns3/simulator.h"
+#include "ns3/priority-tag.h"
+
 #include <cmath>
 
 namespace ns3 {
@@ -111,9 +113,17 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 
 		// determine the qIndex
 		uint32_t qIndex;
+		PriorityTag prio_tag;
+		// IMPORTANT: PriorityTag should only be attached by lossy traffic. This tag indicates the qIndex but also indicates that it is "lossy". Never attach PriorityTag on lossless traffic.
+		int type = (int) p->PeekPacketTag(prio_tag);
+
 		if (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || (m_ackHighPrio && (ch.l3Prot == 0xFD || ch.l3Prot == 0xFC))){  //QCN or PFC or NACK, go highest priority
 			qIndex = 0;
-		}else{
+		}
+		else if (type == LOSSY) {
+			qIndex = prio_tag.GetPriority();
+		}
+		else {
 			qIndex = (ch.l3Prot == 0x06 ? 1 : ch.udp.pg); // if TCP, put to queue 1
 		}
 		// std::cout << "qIndex is: " << qIndex << std::endl;
@@ -123,9 +133,9 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 		p->PeekPacketTag(t);
 		uint32_t inDev = t.GetFlowId();
 		if (qIndex != 0){ //not highest priority
-			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize()) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize())){			// Admission control
-				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize());
-				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize());
+			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), type) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), type)){			// Admission control
+				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize(), type);
+				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize(), type);
 			}else{
 				return; // Drop
 			}
@@ -197,12 +207,15 @@ bool SwitchNode::SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> pack
 }
 
 void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p){
+	PriorityTag prio_tag;
+	int type = (int) p->PeekPacketTag(prio_tag);
+
 	FlowIdTag t;
 	p->PeekPacketTag(t);
 	if (qIndex != 0){
 		uint32_t inDev = t.GetFlowId();
-		m_mmu->RemoveFromIngressAdmission(inDev, qIndex, p->GetSize());
-		m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize());
+		m_mmu->RemoveFromIngressAdmission(inDev, qIndex, p->GetSize(), type);
+		m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize(), type);
 		m_bytes[inDev][ifIndex][qIndex] -= p->GetSize();
 		if (m_ecnEnabled){
 			bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex);

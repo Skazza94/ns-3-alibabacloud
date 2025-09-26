@@ -9,6 +9,11 @@
 #include <vector>
 #include <unordered_map>
 
+/* =============
+Improved RdmaDriver class to support lossy flows.
+Adapted to this ns3 version by Mariano Scazzariello.
+================ */
+
 namespace ns3 {
 
 class RdmaDriver : public Object {
@@ -34,7 +39,7 @@ public:
 	void SetRdmaHw(Ptr<RdmaHw> rdma);
 
 	// add a queue pair
-	void AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t size, uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, uint16_t _sport, uint16_t _dport, uint32_t win, uint64_t baseRtt, Callback<void> notifyAppFinish, Callback<void> notifyAppSent);
+	void AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t size, uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, uint16_t _sport, uint16_t _dport, uint32_t win, uint64_t baseRtt, bool isLossy, Callback<void> notifyAppFinish, Callback<void> notifyAppSent);
 
 	// enable NVLS
 	void EnbaleNVLS();

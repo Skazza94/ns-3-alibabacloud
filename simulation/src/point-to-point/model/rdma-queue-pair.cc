@@ -70,6 +70,8 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
 
 	hpccPint.m_lastUpdateSeq = 0;
 	hpccPint.m_incStage = 0;
+
+	m_isLossy = false;
 }
 
 void RdmaQueuePair::SetSize(uint64_t size){
@@ -129,9 +131,19 @@ void RdmaQueuePair::SetAppSentCallback(Callback<void> notifyAppSent){
 	m_notifyAppSent = notifyAppSent;
 }
 
+void RdmaQueuePair::SetIsLossy(bool v) {
+	m_isLossy = v;
+}
 
-uint64_t RdmaQueuePair::GetBytesLeft(){
-	return m_size >= snd_nxt ? m_size - snd_nxt : 0;
+uint64_t RdmaQueuePair::GetBytesLeft() {
+	uint64_t actual_size = 0;
+	if (m_size >= snd_nxt) {
+		actual_size = m_size - snd_nxt;
+	}
+	if (!m_retransmissionList.empty()) { // Selective Repeat
+		actual_size = m_size - m_retransmissionList.front();
+	}
+	return actual_size;
 }
 
 uint32_t RdmaQueuePair::GetHash(void){
@@ -196,6 +208,11 @@ bool RdmaQueuePair::IsFinished(){
 	return snd_una >= m_size;
 }
 
+void RdmaQueuePair::PopulateRetransmissionList(uint64_t seq, uint32_t mtu) {
+	m_retransmissionList.push_back(seq);
+	m_retransmissionList.push_back(snd_nxt - mtu); // We also send last sent packet for foward progress.
+}
+
 /*********************
  * RdmaRxQueuePair
  ********************/
@@ -229,6 +246,33 @@ uint32_t RdmaRxQueuePair::GetHash(void){
 	buf.sport = sport;
 	buf.dport = dport;
 	return Hash32(buf.c, 12);
+}
+
+bool RdmaRxQueuePair::CheckPsnExists(uint64_t psn) {
+	return std::find(m_receivedPackets.begin(), m_receivedPackets.end(), psn) != m_receivedPackets.end();
+}
+
+void RdmaRxQueuePair::AddPsnToList(uint64_t psn) {
+	// Check if PSN already exists to avoid duplicates
+	if (!CheckPsnExists(psn)) {
+		// Insert in sorted order to maintain the list sorted by PSN
+		auto it = m_receivedPackets.begin();
+		while (it != m_receivedPackets.end() && *it < psn) {
+			++it;
+		}
+		m_receivedPackets.insert(it, psn);
+	}
+}
+
+void RdmaRxQueuePair::DeleteBelowPsn(uint64_t psn) {
+	auto it = m_receivedPackets.begin();
+	while(it != m_receivedPackets.end()) {
+		if(*it < psn) {
+			it = m_receivedPackets.erase(it);
+		} else {
+			++it;
+		}
+	}
 }
 
 /*********************

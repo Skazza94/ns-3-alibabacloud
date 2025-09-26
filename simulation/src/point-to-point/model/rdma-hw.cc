@@ -8,6 +8,7 @@
 #include "ns3/double.h"
 #include "ns3/data-rate.h"
 #include "ns3/pointer.h"
+#include "ns3/priority-tag.h"
 #include "rdma-hw.h"
 #include "ppp-header.h"
 #include "qbb-header.h"
@@ -52,6 +53,11 @@ TypeId RdmaHw::GetTypeId (void)
 				"Layer 2 Ack intervals. Disable ack if equals to 0.",
 				UintegerValue(0),
 				MakeUintegerAccessor(&RdmaHw::m_ack_interval),
+				MakeUintegerChecker<uint32_t>())
+		.AddAttribute("L2Retransmission",
+				"Layer 2 retransmission scheme: 0=go-back, 1=selective-repeat.",
+				UintegerValue(0),
+				MakeUintegerAccessor(&RdmaHw::m_rtx),
 				MakeUintegerChecker<uint32_t>())
 		.AddAttribute("L2BackToZero",
 				"Layer 2 go back to zero transmission.",
@@ -192,8 +198,12 @@ TypeId RdmaHw::GetTypeId (void)
 				"NVLS enable info",
 				UintegerValue(0),
 				MakeUintegerAccessor(&RdmaHw::nvls_enable),
-				MakeUintegerChecker<uint32_t>());
-		;
+				MakeUintegerChecker<uint32_t>())
+		.AddAttribute("Timeout",
+				"Timeout to wait for ACK/NACK before retransmissions [0-31]",
+				UintegerValue(10),
+				MakeUintegerAccessor(&RdmaHw::GetTimeout, &RdmaHw::SetTimeout),
+				MakeUintegerChecker<uint8_t>(0, 31));
 	return tid;
 }
 
@@ -269,7 +279,7 @@ Ptr<RdmaQueuePair> RdmaHw::GetQp(uint32_t dip, uint16_t sport, uint16_t pg){
 		return it->second;
 	return NULL;
 }
-void RdmaHw::AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport, uint32_t win, uint64_t baseRtt, Callback<void> notifyAppFinish, Callback<void> notifyAppSent){
+void RdmaHw::AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport, uint32_t win, uint64_t baseRtt, bool isLossy, Callback<void> notifyAppFinish, Callback<void> notifyAppSent){
 	// create qp
 	Ptr<RdmaQueuePair> qp = CreateObject<RdmaQueuePair>(pg, sip, dip, sport, dport);
 	qp->SetSrc(src);
@@ -280,6 +290,7 @@ void RdmaHw::AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t si
 	qp->SetWin(win);
 	qp->SetBaseRtt(baseRtt);
 	qp->SetVarWin(m_var_win);
+	qp->SetIsLossy(isLossy);
 	qp->SetAppNotifyCallback(notifyAppFinish);
 	qp->SetAppSentCallback(notifyAppSent);
 	// add qp
@@ -385,6 +396,7 @@ uint32_t RdmaHw::GetNicIdxOfRxQp(Ptr<RdmaRxQueuePair> q){
 }
 void RdmaHw::DeleteRxQp(uint32_t dip, uint16_t pg, uint16_t dport){
 	uint64_t key = ((uint64_t)dip << 32) | ((uint64_t)pg << 16) | (uint64_t)dport;
+	CancelReceiverTimer(m_rxQpMap[key]);
 	m_rxQpMap.erase(key);
 }
 
@@ -424,6 +436,10 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	}
 	rxQp->m_ecn_source.total++;
 	rxQp->m_milestone_rx = m_ack_interval;
+
+	// receiver timer will repeat acks once no more packets are received
+	// until then the ReceiverCheckSeq will generate ACK every m_ack_interval
+	RestartReceiverTimer(rxQp, ch);
 
 	int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);
 	if (x == 1 || x == 2){ //generate ACK or NACK
@@ -532,12 +548,25 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 			uint64_t goback_seq = seq / m_chunk * m_chunk;
 			qp->Acknowledge(goback_seq);
 		}
+		
+		// Restart sender timer on ACK/NACK reception
+		RestartSenderTimer(qp);
+		
 		if (qp->IsFinished()){
 			QpComplete(qp);
 		}
 	}
-	if (ch.l3Prot == 0xFD) // NACK
-		RecoverQueue(qp);
+	if (ch.l3Prot == 0xFD) { // NACK
+		if (m_rtx == 1) { // Selective Repeat
+			// add the NACK'd sequence to retransmission list
+			if (seq >= qp->snd_una && std::find(qp->m_retransmissionList.begin(), qp->m_retransmissionList.end(), seq) == qp->m_retransmissionList.end()) {
+				qp->PopulateRetransmissionList(seq, m_mtu);
+			}
+		} else {
+			// restart from the last unacknowledged sequence
+			RecoverQueue(qp);
+		}
+	}
 
 	// handle cnp
 	if (cnp){
@@ -585,6 +614,16 @@ int RdmaHw::ReceiverCheckSeq(uint64_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
 	uint64_t expected = q->ReceiverNextExpectedSeq;
 	if (seq == expected){
 		q->ReceiverNextExpectedSeq = expected + size;
+
+		if (m_rtx == 1) { // Selective Repeat
+			// empty out the received packets list until next gap
+			while (q->CheckPsnExists(q->ReceiverNextExpectedSeq)) {
+				q->ReceiverNextExpectedSeq += size;
+				q->m_milestone_rx += size;
+			}
+			q->DeleteBelowPsn(q->ReceiverNextExpectedSeq);
+		}
+
 		if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx){
 			q->m_milestone_rx += m_ack_interval;
 			return 1; //Generate ACK
@@ -595,6 +634,11 @@ int RdmaHw::ReceiverCheckSeq(uint64_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
 		}
 	} else if (seq > expected) {
 		// Generate NACK
+		if (m_rtx == 1) { // Selective Repeat
+			// add the packet to the received packets list
+			q->AddPsnToList(seq);
+		}
+
 		if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected){
 			q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
 			q->m_lastNACK = expected;
@@ -634,6 +678,9 @@ void RdmaHw::QpComplete(Ptr<RdmaQueuePair> qp){
 		Simulator::Cancel(qp->mlx.m_eventDecreaseRate);
 		Simulator::Cancel(qp->mlx.m_rpTimer);
 	}
+
+	// Cancel sender timer when QP ends
+	CancelSenderTimer(qp);
 
 	// This callback will log info
 	// It may also delete the rxQp on the receiver
@@ -682,13 +729,24 @@ void RdmaHw::RedistributeQp(){
 }
 
 Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
+	uint64_t seq_to_send = qp->snd_nxt;
+	
 	uint64_t payload_size = qp->GetBytesLeft();
 	if ((uint64_t)m_mtu < payload_size)
 		payload_size = m_mtu;
+
+	if (m_rtx == 1) { // Selective Repeat
+		// send from the retransmission list
+		if (!qp->m_retransmissionList.empty()) {
+			seq_to_send = qp->m_retransmissionList.front();
+			qp->m_retransmissionList.pop_front();
+		}
+	}
+
 	Ptr<Packet> p = Create<Packet> ((uint32_t)payload_size);
 	// add SimpleSeqTsHeader
 	SimpleSeqTsHeader seqTs;
-	seqTs.SetSeq (qp->snd_nxt);
+	seqTs.SetSeq (seq_to_send);
 	seqTs.SetPG (qp->m_pg);
 	p->AddHeader (seqTs);
 	// add udp header
@@ -713,10 +771,23 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 	ppp.SetProtocol (0x0021); // EtherToPpp(0x800), see point-to-point-net-device.cc
 	p->AddHeader (ppp);
 
+	// If lossy, add the custom PriorityTag
+	if (qp->m_isLossy) {
+		PriorityTag prio_tag;
+      	prio_tag.SetPriority(qp->m_pg);
+      	p->AddPacketTag(prio_tag);
+	}
+
 	// update state
-	qp->snd_nxt += payload_size;
+	if (seq_to_send == qp->snd_nxt) {
+		qp->snd_nxt += payload_size;
+	}
 	// std::cout << "current snd_nxt is: " << qp->snd_nxt << ", the window is: " << qp->m_win << std::endl;
 	qp->m_ipid++;
+
+	if (seq_to_send == 0) { // this is the first packet
+		RestartSenderTimer(qp);
+	}
 
 	// return
 	return p;
@@ -1293,6 +1364,103 @@ void RdmaHw::UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader
                                qp->hpccPint.m_lastUpdateSeq = next_seq; //+ rand() % 2 * m_mtu;
                }
        }
+}
+
+/****************************
+ * Retransmission Management
+ ****************************/
+uint8_t RdmaHw::GetTimeout(void) const {
+	return m_timeout;
+}
+
+void RdmaHw::SetTimeout(uint8_t v) {
+	m_timeout = v;
+
+	if (v == 0) {
+		// Special value which means wait an infinite time for the ACK/NACK
+		m_retransmissionTimeout = MicroSeconds(0);
+	} else {
+		// A kernel patch considers packet_life_time = ca_ack_delay - 1. The following comments is from the patch:
+		/* In case ACK timeout is set, use this value to calculate
+			* PacketLifeTime.  As per IBTA 12.7.34,
+			* local ACK timeout = (2 * PacketLifeTime + Local CA’s ACK delay).
+			* Assuming a negligible local ACK delay, we can use
+			* PacketLifeTime = local ACK timeout/2
+			* as a reasonable approximation for RoCE networks.
+			*/
+		uint8_t tgtDelay = CmAckTimeout(v, v - 1);
+		m_retransmissionTimeout = MilliSeconds(CmConvertToMs(tgtDelay));
+	}
+}
+
+void RdmaHw::RestartSenderTimer(Ptr<RdmaQueuePair> qp) {
+	// Cancel existing timer if running
+	if (qp->m_senderTimer.IsRunning()) {
+		Simulator::Cancel(qp->m_senderTimer);
+	}
+
+	// Only schedule retransmissions if m_retransmissionTimeout is > 0
+	if (m_retransmissionTimeout.Compare(MicroSeconds(0)) > 0) {
+		qp->m_senderTimer = Simulator::Schedule(m_retransmissionTimeout, &RdmaHw::SenderTimeoutHandler, this, qp);
+	}
+}
+
+void RdmaHw::CancelSenderTimer(Ptr<RdmaQueuePair> qp) {
+	if (qp->m_senderTimer.IsRunning()) {
+		Simulator::Cancel(qp->m_senderTimer);
+	}
+}
+
+void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
+	qp->PopulateRetransmissionList(qp->snd_una, m_mtu);
+	RestartSenderTimer(qp);
+
+	// Trigger transmission to send retransmitted packets
+	uint32_t nic_idx = GetNicIdxOfQp(qp);
+	m_nic[nic_idx].dev->TriggerTransmit();
+}
+
+void RdmaHw::RestartReceiverTimer(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch) {
+	if (rxQp->m_receiverTimer.IsRunning()) {
+		Simulator::Cancel(rxQp->m_receiverTimer);
+	}
+	rxQp->m_receiverTimer = Simulator::Schedule(MicroSeconds(m_nack_interval), &RdmaHw::ReceiverTimeoutHandler, this, rxQp, ch);
+}
+
+void RdmaHw::CancelReceiverTimer(Ptr<RdmaRxQueuePair> rxQp) {
+	if (rxQp->m_receiverTimer.IsRunning()) {
+		Simulator::Cancel(rxQp->m_receiverTimer);
+	}
+}
+
+void RdmaHw::ReceiverTimeoutHandler(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch) {
+	// send NACK like in ReceiveUdp
+	qbbHeader seqh;
+	seqh.SetSeq(rxQp->ReceiverNextExpectedSeq);
+	seqh.SetPG(ch.udp.pg);
+	seqh.SetSport(ch.udp.dport);
+	seqh.SetDport(ch.udp.sport);
+	seqh.SetIntHeader(ch.udp.ih);
+
+	Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
+	newp->AddHeader(seqh);
+
+	Ipv4Header head;	// Prepare IPv4 header
+	head.SetDestination(Ipv4Address(ch.sip));
+	head.SetSource(Ipv4Address(ch.dip));
+	head.SetProtocol(0xFD); //ack=0xFC nack=0xFD
+	head.SetTtl(64);
+	head.SetPayloadSize(newp->GetSize());
+	head.SetIdentification(rxQp->m_ipid++);
+
+	newp->AddHeader(head);
+	AddHeader(newp, 0x800);	// Attach PPP header
+
+	uint32_t nic_idx = GetNicIdxOfRxQp(rxQp);
+	m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp);
+	m_nic[nic_idx].dev->TriggerTransmit();
+
+	RestartReceiverTimer(rxQp, ch);
 }
 
 }

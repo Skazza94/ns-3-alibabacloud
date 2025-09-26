@@ -84,6 +84,7 @@ private:
   uint64_t src; 
   uint64_t dest; 
   uint32_t nvls_enable;
+  bool m_isLossy;
 };
 
 } // namespace ns3

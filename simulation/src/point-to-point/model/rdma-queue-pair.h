@@ -9,6 +9,13 @@
 #include <ns3/custom-header.h>
 #include <ns3/int-header.h>
 #include <vector>
+#include <algorithm>
+#include <list>
+
+/* =============
+Improved RdmaQueuePair and RdmaRxQueuePair classes to support lossy flows, RTOs and Mellanox Selective Repeat.
+Original RTO and SR code was implemented by Alexandra Udrescu, adapted and improved to this ns3 version by Mariano Scazzariello.
+================ */
 
 namespace ns3 {
 
@@ -29,8 +36,13 @@ public:
 	Time m_nextAvail;	//< Soonest time of next send
 	uint32_t wp; // current window of packets
 	uint32_t lastPktSize;
+	bool m_isLossy; // if the QP is lossy
 	Callback<void> m_notifyAppFinish;
 	Callback<void> m_notifyAppSent;
+
+	std::list<uint64_t> m_retransmissionList; // PSNs to retransmit for SR
+	EventId m_senderTimer; // Sender timer for SR
+
 	/******************************
 	 * runtime states
 	 *****************************/
@@ -93,6 +105,7 @@ public:
 	void SetVarWin(bool v);
 	void SetAppNotifyCallback(Callback<void> notifyAppFinish);
 	void SetAppSentCallback(Callback<void> notifyAppSent);
+	void SetIsLossy(bool v);
 
 	uint64_t GetBytesLeft();
 	uint64_t GetInitialSize();
@@ -107,6 +120,8 @@ public:
 	uint64_t GetWin(); // window size calculated from m_rate
 	bool IsFinished();
 	uint64_t HpGetCurWin(); // window size calculated from hp.m_curRate, used by HPCC
+
+	void PopulateRetransmissionList(uint64_t seq, uint32_t mtu);
 };
 
 class RdmaRxQueuePair : public Object { // Rx side queue pair
@@ -129,9 +144,18 @@ public:
 	uint32_t m_lastNACK;
 	EventId QcnTimerEvent; // if destroy this rxQp, remember to cancel this timer
 
+	// Receiver timer for retransmission
+	EventId m_receiverTimer;
+
 	static TypeId GetTypeId (void);
 	RdmaRxQueuePair();
 	uint32_t GetHash(void);
+
+	// Selective Repeat methods
+	std::list<uint64_t> m_receivedPackets; // Ordered list of received packets for selective repeat
+	bool CheckPsnExists(uint64_t psn);
+	void DeleteBelowPsn(uint64_t psn);
+	void AddPsnToList(uint64_t psn);
 };
 
 class RdmaQueuePairGroup : public Object {

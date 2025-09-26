@@ -85,7 +85,10 @@ TypeId RdmaClient::GetTypeId(void) {
                         MakeUintegerChecker<uint64_t>())
           .AddAttribute("NVLS_enable", "NVLS enable info", UintegerValue(0),
                         MakeUintegerAccessor(&RdmaClient::nvls_enable),
-                        MakeUintegerChecker<uint32_t>());
+                        MakeUintegerChecker<uint32_t>())
+          .AddAttribute("Lossy", "Lossy Flow", BooleanValue(false),
+                        MakeBooleanAccessor(&RdmaClient::m_isLossy),
+                        MakeBooleanChecker());
   return tid;
 }
 
@@ -132,7 +135,7 @@ void RdmaClient::StartApplication(void) {
   if(nvls_enable) rdma->EnbaleNVLS();
   else rdma->DisableNVLS();
   rdma->AddQueuePair(src, dest, tag, m_size, m_pg, m_sip, m_dip, m_sport,
-                     m_dport, m_win, m_baseRtt,
+                     m_dport, m_win, m_baseRtt, m_isLossy,
                      MakeCallback(&RdmaClient::Finish, this),
                      MakeCallback(&RdmaClient::Sent, this));
 }

@@ -90,15 +90,16 @@ void NVSwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 			qIndex = (ch.l3Prot == 0x06 ? 1 : ch.udp.pg); // if TCP, put to queue 1
 		}
 
+		uint8_t type = LOSSLESS;
 
 		// admission control
 		FlowIdTag t;
 		p->PeekPacketTag(t);
 		uint32_t inDev = t.GetFlowId();
 		if (qIndex != 0){ //not highest priority
-			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize()) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize())){			// Admission control
-				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize());
-				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize());
+			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), type) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), type)){			// Admission control
+				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize(), type);
+				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize(), type);
 			}else{
 				return; // Drop
 			}
@@ -169,12 +170,14 @@ bool NVSwitchNode::SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> pa
 }
 
 void NVSwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p){
+	uint8_t type = LOSSLESS;
+
 	FlowIdTag t;
 	p->PeekPacketTag(t);
 	if (qIndex != 0){
 		uint32_t inDev = t.GetFlowId();
-		m_mmu->RemoveFromIngressAdmission(inDev, qIndex, p->GetSize());
-		m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize());
+		m_mmu->RemoveFromIngressAdmission(inDev, qIndex, p->GetSize(), type);
+		m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize(), type);
 		m_bytes[inDev][ifIndex][qIndex] -= p->GetSize();
 	}
 	m_txBytes[ifIndex] += p->GetSize();

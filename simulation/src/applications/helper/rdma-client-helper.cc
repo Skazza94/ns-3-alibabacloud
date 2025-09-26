@@ -20,6 +20,7 @@
 #include "rdma-client-helper.h"
 #include "ns3/rdma-client.h"
 #include "ns3/uinteger.h"
+#include "ns3/boolean.h"
 #include "ns3/string.h"
 
 namespace ns3 {
@@ -44,6 +45,7 @@ RdmaClientHelper::RdmaClientHelper (uint16_t pg, Ipv4Address sip, Ipv4Address di
   SetAttribute ("Src", UintegerValue (src));
   SetAttribute ("Dest", UintegerValue (dest));
   SetAttribute ("NVLS_enable", UintegerValue (0));
+  SetAttribute ("Lossy", BooleanValue (false));
   msg_handler = msg_handler;
   fun_arg = fun_arg;
 }

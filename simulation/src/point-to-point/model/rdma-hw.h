@@ -8,7 +8,13 @@
 #include "qbb-net-device.h"
 #include <unordered_map>
 #include <set>
+#include <algorithm>
 #include "pint.h"
+
+/* =============
+Improved RdmaHw class to support lossy flows, RTOs and Mellanox Selective Repeat.
+Original RTO and SR code was implemented by Alexandra Udrescu, adapted and improved to this ns3 version by Mariano Scazzariello.
+================ */
 
 namespace ns3 {
 
@@ -36,6 +42,7 @@ public:
 	double m_nack_interval;
 	uint32_t m_chunk;
 	uint32_t m_ack_interval;
+	uint32_t m_rtx;
 	bool m_backto0;
 	bool m_var_win, m_fast_react;
 	bool m_rateBound;
@@ -77,7 +84,7 @@ public:
 	static uint64_t GetQpKey(uint32_t dip, uint16_t sport, uint16_t pg); // get the lookup key for m_qpMap
 	Ptr<RdmaQueuePair> GetQp(uint32_t dip, uint16_t sport, uint16_t pg); // get the qp
 	uint32_t GetNicIdxOfQp(Ptr<RdmaQueuePair> qp); // get the NIC index of the qp
-	void AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t size, uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, uint16_t _sport, uint16_t _dport, uint32_t win, uint64_t baseRtt, Callback<void> notifyAppFinish, Callback<void> notifyAppSent); // add a new qp (new send)
+	void AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t size, uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, uint16_t _sport, uint16_t _dport, uint32_t win, uint64_t baseRtt, bool isLossy, Callback<void> notifyAppFinish, Callback<void> notifyAppSent); // add a new qp (new send)
 	void DeleteQueuePair(Ptr<RdmaQueuePair> qp);
 
 	Ptr<RdmaRxQueuePair> GetRxQp(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport, uint16_t pg, bool create); // get a rxQp
@@ -184,6 +191,45 @@ public:
 	void SetPintSmplThresh(double p);
 	void HandleAckHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
 	void UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, bool fast_react);
+
+	/****************************
+	 * Retransmission Management
+	 ****************************/
+	Time m_retransmissionTimeout;
+	uint8_t m_timeout;
+	uint8_t GetTimeout(void) const; 
+	void SetTimeout(uint8_t v);
+	// ACK Timeout Timer, see: https://www.rdmamojo.com/2013/01/12/ibv_modify_qp/ under the "timeout" description to understand the computation
+    // In the Linux kernel the computation differs a bit to avoid too high timeouts.
+    // The following two functions are taken from drivers/infiniband/core/cm.c
+    /*
+     * calculate: 4.096x2^ack_timeout = 4.096x2^ack_delay + 2x4.096x2^life_time
+     * Because of how ack_timeout is stored, adding one doubles the timeout.
+     * To avoid large timeouts, select the max(ack_delay, life_time + 1), and
+     * increment it (round up) only if the other is within 50%.
+     */
+    static uint8_t CmAckTimeout(uint8_t ca_ack_delay, uint8_t packet_life_time)
+    {
+        int ack_timeout = packet_life_time + 1;
+
+        if (ack_timeout >= ca_ack_delay)
+            ack_timeout += (ca_ack_delay >= (ack_timeout - 1));
+        else
+            ack_timeout = ca_ack_delay + (ack_timeout >= (ca_ack_delay - 1));
+
+        return std::min(31, ack_timeout);
+    }
+    static inline int CmConvertToMs(int iba_time)
+    {
+        /* approximate conversion to ms from 4.096us x 2^iba_time */
+        return 1 << std::max(iba_time - 8, 0);
+    }
+	void RestartSenderTimer(Ptr<RdmaQueuePair> qp);
+	void CancelSenderTimer(Ptr<RdmaQueuePair> qp);
+	void SenderTimeoutHandler(Ptr<RdmaQueuePair> qp);
+	void RestartReceiverTimer(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch);
+	void CancelReceiverTimer(Ptr<RdmaRxQueuePair> rxQp);
+	void ReceiverTimeoutHandler(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch);
 };
 
 } /* namespace ns3 */
