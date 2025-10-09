@@ -199,11 +199,11 @@ TypeId RdmaHw::GetTypeId (void)
 				UintegerValue(0),
 				MakeUintegerAccessor(&RdmaHw::nvls_enable),
 				MakeUintegerChecker<uint32_t>())
-		.AddAttribute("Timeout",
-				"Timeout to wait for ACK/NACK before retransmissions [0-31]",
-				UintegerValue(10),
-				MakeUintegerAccessor(&RdmaHw::GetTimeout, &RdmaHw::SetTimeout),
-				MakeUintegerChecker<uint8_t>(0, 31));
+		.AddAttribute("RetransmissionTimeout",
+				"The retransmission timeout interval in microseconds",
+				DoubleValue(50000000.0),
+				MakeDoubleAccessor(&RdmaHw::m_retransmissionTimeout),
+				MakeDoubleChecker<double>());
 	return tid;
 }
 
@@ -478,6 +478,28 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 		if(did == m_node->GetId() && m_node->GetNodeType() == 2 && ch.m_tos == 4) m_nic[nic_idx].dev->SwitchAsHostSend();
 		else m_nic[nic_idx].dev->TriggerTransmit();
 	}
+
+	std::cout 	
+			<< Simulator::Now().GetTimeStep() << " " 
+			<< "[RECEIVER] "
+			<< "[UDP] "
+			<< "[" << Ipv4Address(rxQp->dip) << "(" << rxQp->dport 
+			<< ") --> "  << Ipv4Address(rxQp->sip) << "(" << rxQp->sport << ")] "
+			<< "[Seq " << ch.udp.seq << "] "
+			<< "[Size " << payload_size << "] "
+			<< "=> "
+			<< "[Response ";
+		if (x == 1){
+			std::cout << "ACK" << "(" << rxQp->ReceiverNextExpectedSeq << ")";
+		}else if (x == 2){
+			std::cout << "NACK" << "(" << rxQp->ReceiverNextExpectedSeq << ")";
+		}else
+			std::cout << "NONE";
+		if (ecnbits != 0) {
+			std::cout << " + CNP";
+		}
+		std::cout << "] " << x << std::endl;
+
 	return 0;
 }
 
@@ -562,6 +584,17 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 			if (seq >= qp->snd_una && std::find(qp->m_retransmissionList.begin(), qp->m_retransmissionList.end(), seq) == qp->m_retransmissionList.end()) {
 				qp->PopulateRetransmissionList(seq, m_mtu);
 			}
+
+			std::cout
+					<< Simulator::Now().GetTimeStep() << " "
+					<< "[SENDER]   [INFO] "
+					<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+					<< ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+					<< "RTX list: ";
+				for(auto it = qp->m_retransmissionList.begin(); it != qp->m_retransmissionList.end(); ++it){
+					std::cout << *it << " ";
+				}
+				std::cout << std::endl;
 		} else {
 			// restart from the last unacknowledged sequence
 			RecoverQueue(qp);
@@ -576,6 +609,14 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 			cnp_received_mlx(qp);
 		} 
 	}
+
+	std::cout
+			<< Simulator::Now().GetTimeStep() << " "
+			<< "[SENDER]  " << ((ch.l3Prot == 0xFD ? "[NACK]" : " [ACK]")) << " "
+			<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+			<< ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+			<< (ch.l3Prot == 0xFD ? "NACK" : "ACK") << "(" << seq << ")"
+			<< (cnp ? "+CNP" : "") << std::endl;
 
 	if (m_cc_mode == 3){
 		HandleAckHp(qp, p, ch);
@@ -637,6 +678,20 @@ int RdmaHw::ReceiverCheckSeq(uint64_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
 		if (m_rtx == 1) { // Selective Repeat
 			// add the packet to the received packets list
 			q->AddPsnToList(seq);
+
+			// if queue not empty, print the receive list
+				if (!q->m_receivedPackets.empty()){
+					std::cout
+						<< Simulator::Now().GetTimeStep() << " "
+						<< "[RECEIVER] [INFO]"
+						<< "[" << Ipv4Address(q->sip) << "(" << q->sport 
+						<< ") --> " << Ipv4Address(q->dip) << "(" << q->dport << ")] "
+						<< "OOO list: ";
+					for(auto it = q->m_receivedPackets.begin(); it != q->m_receivedPackets.end(); ++it){
+						std::cout << *it << " ";
+					}
+					std::cout << std::endl;
+				}
 		}
 
 		if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected){
@@ -1369,49 +1424,41 @@ void RdmaHw::UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader
 /****************************
  * Retransmission Management
  ****************************/
-uint8_t RdmaHw::GetTimeout(void) const {
-	return m_timeout;
-}
-
-void RdmaHw::SetTimeout(uint8_t v) {
-	m_timeout = v;
-
-	if (v == 0) {
-		// Special value which means wait an infinite time for the ACK/NACK
-		m_retransmissionTimeout = MicroSeconds(0);
-	} else {
-		// A kernel patch considers packet_life_time = ca_ack_delay - 1. The following comments is from the patch:
-		/* In case ACK timeout is set, use this value to calculate
-			* PacketLifeTime.  As per IBTA 12.7.34,
-			* local ACK timeout = (2 * PacketLifeTime + Local CA’s ACK delay).
-			* Assuming a negligible local ACK delay, we can use
-			* PacketLifeTime = local ACK timeout/2
-			* as a reasonable approximation for RoCE networks.
-			*/
-		uint8_t tgtDelay = CmAckTimeout(v, v - 1);
-		m_retransmissionTimeout = MilliSeconds(CmConvertToMs(tgtDelay));
-	}
-}
-
 void RdmaHw::RestartSenderTimer(Ptr<RdmaQueuePair> qp) {
+	std::cout << Simulator::Now().GetTimeStep() << " "
+				<< "[SENDER]  [TIME] "
+				<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+				<< ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+				<< "Restart sender timer until " << (Simulator::Now() + MicroSeconds(m_retransmissionTimeout)).GetTimeStep() << std::endl;
+
 	// Cancel existing timer if running
 	if (qp->m_senderTimer.IsRunning()) {
 		Simulator::Cancel(qp->m_senderTimer);
 	}
 
-	// Only schedule retransmissions if m_retransmissionTimeout is > 0
-	if (m_retransmissionTimeout.Compare(MicroSeconds(0)) > 0) {
-		qp->m_senderTimer = Simulator::Schedule(m_retransmissionTimeout, &RdmaHw::SenderTimeoutHandler, this, qp);
-	}
+	qp->m_senderTimer = Simulator::Schedule(MicroSeconds(m_retransmissionTimeout), &RdmaHw::SenderTimeoutHandler, this, qp);
 }
 
 void RdmaHw::CancelSenderTimer(Ptr<RdmaQueuePair> qp) {
+	std::cout << Simulator::Now().GetTimeStep() << " "
+				  << "[SENDER]  [TIME] "
+				  << "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+				  << ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+				  << "Cancel sender timer" << std::endl;
+
 	if (qp->m_senderTimer.IsRunning()) {
 		Simulator::Cancel(qp->m_senderTimer);
 	}
 }
 
 void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
+	std::cout << Simulator::Now().GetTimeStep() << " "
+				  << "[SENDER]  [TIME] "
+				  << "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+				  << ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+				  << "Timeout sender timer" << std::endl;
+
+
 	qp->PopulateRetransmissionList(qp->snd_una, m_mtu);
 	RestartSenderTimer(qp);
 
@@ -1428,6 +1475,12 @@ void RdmaHw::RestartReceiverTimer(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch) {
 }
 
 void RdmaHw::CancelReceiverTimer(Ptr<RdmaRxQueuePair> rxQp) {
+std::cout << Simulator::Now().GetTimeStep() << " "
+				  << "[RECEIVER][TIME] "
+				  << "[" << Ipv4Address(rxQp->dip) << "(" << rxQp->dport 
+				  << ") --> " << Ipv4Address(rxQp->sip) << "(" << rxQp->sport << ")] "
+				  << "Cancel receiver timer" << std::endl;
+
 	if (rxQp->m_receiverTimer.IsRunning()) {
 		Simulator::Cancel(rxQp->m_receiverTimer);
 	}
@@ -1459,6 +1512,13 @@ void RdmaHw::ReceiverTimeoutHandler(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch)
 	uint32_t nic_idx = GetNicIdxOfRxQp(rxQp);
 	m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp);
 	m_nic[nic_idx].dev->TriggerTransmit();
+
+	std::cout
+			<< Simulator::Now().GetTimeStep() << " "
+			<< "[RECEIVER][TIME] "
+			<< "[" << Ipv4Address(rxQp->dip) << "(" << rxQp->dport 
+			<< ") --> " << Ipv4Address(rxQp->sip) << "(" << rxQp->sport << ")] "
+			<< "=> NACK(" << rxQp->ReceiverNextExpectedSeq << ")" << std::endl;
 
 	RestartReceiverTimer(rxQp, ch);
 }

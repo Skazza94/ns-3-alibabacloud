@@ -195,35 +195,7 @@ public:
 	/****************************
 	 * Retransmission Management
 	 ****************************/
-	Time m_retransmissionTimeout;
-	uint8_t m_timeout;
-	uint8_t GetTimeout(void) const; 
-	void SetTimeout(uint8_t v);
-	// ACK Timeout Timer, see: https://www.rdmamojo.com/2013/01/12/ibv_modify_qp/ under the "timeout" description to understand the computation
-    // In the Linux kernel the computation differs a bit to avoid too high timeouts.
-    // The following two functions are taken from drivers/infiniband/core/cm.c
-    /*
-     * calculate: 4.096x2^ack_timeout = 4.096x2^ack_delay + 2x4.096x2^life_time
-     * Because of how ack_timeout is stored, adding one doubles the timeout.
-     * To avoid large timeouts, select the max(ack_delay, life_time + 1), and
-     * increment it (round up) only if the other is within 50%.
-     */
-    static uint8_t CmAckTimeout(uint8_t ca_ack_delay, uint8_t packet_life_time)
-    {
-        int ack_timeout = packet_life_time + 1;
-
-        if (ack_timeout >= ca_ack_delay)
-            ack_timeout += (ca_ack_delay >= (ack_timeout - 1));
-        else
-            ack_timeout = ca_ack_delay + (ack_timeout >= (ca_ack_delay - 1));
-
-        return std::min(31, ack_timeout);
-    }
-    static inline int CmConvertToMs(int iba_time)
-    {
-        /* approximate conversion to ms from 4.096us x 2^iba_time */
-        return 1 << std::max(iba_time - 8, 0);
-    }
+	double m_retransmissionTimeout;
 	void RestartSenderTimer(Ptr<RdmaQueuePair> qp);
 	void CancelSenderTimer(Ptr<RdmaQueuePair> qp);
 	void SenderTimeoutHandler(Ptr<RdmaQueuePair> qp);
