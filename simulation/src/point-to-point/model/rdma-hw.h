@@ -102,7 +102,7 @@ public:
 	bool enable_pcie_pause; 
 
 	void CheckandSendQCN(Ptr<RdmaRxQueuePair> q);
-	int ReceiverCheckSeq(uint64_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size);
+	std::tuple<int, uint64_t, uint64_t> ReceiverCheckSeq(uint64_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size);
 	void AddHeader (Ptr<Packet> p, uint16_t protocolNumber);
 	static uint16_t EtherToPpp (uint16_t protocol);
 
@@ -199,9 +199,6 @@ public:
 	void RestartSenderTimer(Ptr<RdmaQueuePair> qp);
 	void CancelSenderTimer(Ptr<RdmaQueuePair> qp);
 	void SenderTimeoutHandler(Ptr<RdmaQueuePair> qp);
-	void RestartReceiverTimer(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch);
-	void CancelReceiverTimer(Ptr<RdmaRxQueuePair> rxQp);
-	void ReceiverTimeoutHandler(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch);
 };
 
 } /* namespace ns3 */

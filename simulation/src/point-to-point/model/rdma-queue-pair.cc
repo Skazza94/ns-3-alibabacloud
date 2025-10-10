@@ -210,7 +210,6 @@ bool RdmaQueuePair::IsFinished(){
 
 void RdmaQueuePair::PopulateRetransmissionList(uint64_t seq, uint32_t mtu) {
 	m_retransmissionList.push_back(seq);
-	m_retransmissionList.push_back(snd_nxt - mtu); // We also send last sent packet for foward progress.
 }
 
 /*********************
@@ -228,6 +227,8 @@ RdmaRxQueuePair::RdmaRxQueuePair(){
 	sip = dip = sport = dport = 0;
 	m_ipid = 0;
 	ReceiverNextExpectedSeq = 0;
+	ReceiverLastExpectedSeq = 0;
+	HighestSeqno = 0;
 	m_nackTimer = Time(0);
 	m_milestone_rx = 0;
 	m_lastNACK = 0;
@@ -249,30 +250,52 @@ uint32_t RdmaRxQueuePair::GetHash(void){
 }
 
 bool RdmaRxQueuePair::CheckPsnExists(uint64_t psn) {
-	return std::find(m_receivedPackets.begin(), m_receivedPackets.end(), psn) != m_receivedPackets.end();
+	return m_rxBuffer.count(psn) > 0;
 }
 
-void RdmaRxQueuePair::AddPsnToList(uint64_t psn) {
-	// Check if PSN already exists to avoid duplicates
-	if (!CheckPsnExists(psn)) {
-		// Insert in sorted order to maintain the list sorted by PSN
-		auto it = m_receivedPackets.begin();
-		while (it != m_receivedPackets.end() && *it < psn) {
-			++it;
-		}
-		m_receivedPackets.insert(it, psn);
-	}
+void RdmaRxQueuePair::AddPsnToList(uint64_t psn, size_t size) {
+	m_rxBuffer.emplace(psn, size);
 }
 
 void RdmaRxQueuePair::DeleteBelowPsn(uint64_t psn) {
-	auto it = m_receivedPackets.begin();
-	while(it != m_receivedPackets.end()) {
-		if(*it < psn) {
-			it = m_receivedPackets.erase(it);
-		} else {
-			++it;
+	auto first_keep = m_rxBuffer.lower_bound(psn);
+    m_rxBuffer.erase(m_rxBuffer.begin(), first_keep);
+}
+
+std::tuple<uint64_t, uint32_t, uint64_t *> RdmaRxQueuePair::NextPsnHole()
+{
+    uint64_t lastAcked = ReceiverLastExpectedSeq;
+	uint64_t *retSeqno = nullptr;
+    for (uint64_t seqno = ReceiverNextExpectedSeq; seqno <= HighestSeqno;)
+    {
+		// std::cout
+		// 		<< Simulator::Now().GetTimeStep() << " "
+		// 		<< "[RECEIVER] [INFO] NextPsnHole "
+		// 		<< "[" << Ipv4Address(sip) << "(" << sport 
+		// 		<< ") --> " << Ipv4Address(dip) << "(" << dport << ")] "
+		// 		<< "curr seqno " << seqno << " lastAcked " << lastAcked << " HighestSeqno " << HighestSeqno << std::endl;
+
+        if (!CheckPsnExists(seqno))
+        {
+			// std::cout
+			// 	<< Simulator::Now().GetTimeStep() << " "
+			// 	<< "[RECEIVER] [INFO]"
+			// 	<< "[" << Ipv4Address(sip) << "(" << sport 
+			// 	<< ") --> " << Ipv4Address(dip) << "(" << dport << ")] "
+			// 	<< "there is an hole at " << seqno << std::endl;
+
+            retSeqno = new uint64_t;
+            std::memcpy(retSeqno, &seqno, sizeof(uint64_t));
+
+			break;
+        } else {
+			// Advance by size
+	        lastAcked = seqno;
+			seqno += m_rxBuffer[seqno];
 		}
-	}
+    }
+
+	return std::make_tuple(lastAcked, m_rxBuffer[lastAcked], retSeqno);
 }
 
 /*********************

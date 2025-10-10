@@ -396,7 +396,6 @@ uint32_t RdmaHw::GetNicIdxOfRxQp(Ptr<RdmaRxQueuePair> q){
 }
 void RdmaHw::DeleteRxQp(uint32_t dip, uint16_t pg, uint16_t dport){
 	uint64_t key = ((uint64_t)dip << 32) | ((uint64_t)pg << 16) | (uint64_t)dport;
-	CancelReceiverTimer(m_rxQpMap[key]);
 	m_rxQpMap.erase(key);
 }
 
@@ -437,11 +436,17 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	rxQp->m_ecn_source.total++;
 	rxQp->m_milestone_rx = m_ack_interval;
 
-	// receiver timer will repeat acks once no more packets are received
-	// until then the ReceiverCheckSeq will generate ACK every m_ack_interval
-	RestartReceiverTimer(rxQp, ch);
+	// std::cout 	
+	// 	<< Simulator::Now().GetTimeStep() << " " 
+	// 	<< "[RECEIVER] "
+	// 	<< "[UDP] "
+	// 	<< "[" << Ipv4Address(rxQp->dip) << "(" << rxQp->dport 
+	// 	<< ") --> "  << Ipv4Address(rxQp->sip) << "(" << rxQp->sport << ")] "
+	// 	<< "[Seq " << ch.udp.seq << "] "
+	// 	<< "[Size " << payload_size << "] " << std::endl;
 
-	int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);
+	int x, toAck, nextHole;
+	std::tie(x, toAck, nextHole) = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);
 	if (x == 1 || x == 2){ //generate ACK or NACK
 		qbbHeader seqh;
 		seqh.SetSeq(rxQp->ReceiverNextExpectedSeq);
@@ -477,28 +482,87 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 		// 发送给目标 NVSwitch 的报文
 		if(did == m_node->GetId() && m_node->GetNodeType() == 2 && ch.m_tos == 4) m_nic[nic_idx].dev->SwitchAsHostSend();
 		else m_nic[nic_idx].dev->TriggerTransmit();
+	} else if (x == 6) {
+		// Send ACK for last acked
+		qbbHeader seqh;
+		seqh.SetSeq(toAck);
+		seqh.SetPG(ch.udp.pg);
+		seqh.SetSport(ch.udp.dport);
+		seqh.SetDport(ch.udp.sport);
+		seqh.SetIntHeader(ch.udp.ih);
+		if (ecnbits)
+			seqh.SetCnp();
+
+		Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
+		newp->AddHeader(seqh);
+
+		Ipv4Header head;
+		head.SetDestination(Ipv4Address(ch.sip));
+		head.SetSource(Ipv4Address(ch.dip));
+		head.SetProtocol(0xFC);
+		head.SetTtl(64);
+		head.SetPayloadSize(newp->GetSize());
+		head.SetIdentification(rxQp->m_ipid++);
+		if(ch.m_tos == 4) head.SetTos(4);
+
+		newp->AddHeader(head);
+		AddHeader(newp, 0x800);
+		uint32_t sip = ch.sip;
+		uint32_t sid = (sip >> 8) & 0xffff;
+		uint32_t dip = ch.dip;
+		uint32_t did = (dip >> 8) & 0xffff;
+		uint32_t nic_idx = GetNicIdxOfRxQp(rxQp);
+		m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp);
+		if(did == m_node->GetId() && m_node->GetNodeType() == 2 && ch.m_tos == 4) m_nic[nic_idx].dev->SwitchAsHostSend();
+		else m_nic[nic_idx].dev->TriggerTransmit();
+
+		// Send selective NACK
+		qbbHeader seqh1;
+		seqh1.SetSeq(nextHole);
+		seqh1.SetPG(ch.udp.pg);
+		seqh1.SetSport(ch.udp.dport);
+		seqh1.SetDport(ch.udp.sport);
+		seqh1.SetIntHeader(ch.udp.ih);
+		if (ecnbits)
+			seqh1.SetCnp();
+
+		Ptr<Packet> newp1 = Create<Packet>(std::max(60-14-20-(int)seqh1.GetSerializedSize(), 0));
+		newp1->AddHeader(seqh1);
+
+		Ipv4Header head1;
+		head1.SetDestination(Ipv4Address(ch.sip));
+		head1.SetSource(Ipv4Address(ch.dip));
+		head1.SetProtocol(0xFD);
+		head1.SetTtl(64);
+		head1.SetPayloadSize(newp->GetSize());
+		head1.SetIdentification(rxQp->m_ipid++);
+		if(ch.m_tos == 4) head1.SetTos(4);
+
+		newp1->AddHeader(head1);
+		AddHeader(newp1, 0x800);
+		// Enqueue only
+		m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp1);
 	}
 
-	std::cout 	
-			<< Simulator::Now().GetTimeStep() << " " 
-			<< "[RECEIVER] "
-			<< "[UDP] "
-			<< "[" << Ipv4Address(rxQp->dip) << "(" << rxQp->dport 
-			<< ") --> "  << Ipv4Address(rxQp->sip) << "(" << rxQp->sport << ")] "
-			<< "[Seq " << ch.udp.seq << "] "
-			<< "[Size " << payload_size << "] "
-			<< "=> "
-			<< "[Response ";
-		if (x == 1){
-			std::cout << "ACK" << "(" << rxQp->ReceiverNextExpectedSeq << ")";
-		}else if (x == 2){
-			std::cout << "NACK" << "(" << rxQp->ReceiverNextExpectedSeq << ")";
-		}else
-			std::cout << "NONE";
-		if (ecnbits != 0) {
-			std::cout << " + CNP";
-		}
-		std::cout << "] " << x << std::endl;
+	// std::cout 	
+	// 	<< Simulator::Now().GetTimeStep() << " " 
+	// 	<< "[RECEIVER] "
+	// 	<< "[UDP] "
+	// 	<< "[" << Ipv4Address(rxQp->dip) << "(" << rxQp->dport 
+	// 	<< ") --> "  << Ipv4Address(rxQp->sip) << "(" << rxQp->sport << ")] "
+	// 	<< "[Response ";
+	// if (x == 1){
+	// 	std::cout << "ACK" << "(" << rxQp->ReceiverNextExpectedSeq << ")";
+	// }else if (x == 2){
+	// 	std::cout << "NACK" << "(" << rxQp->ReceiverNextExpectedSeq << ")";
+	// }else if (x == 6) {
+	// 	std::cout << "ACK" << "(" << toAck << ") and NACK" << "(" << nextHole << ")";
+	// } else
+	// 	std::cout << "NONE";
+	// if (ecnbits != 0) {
+	// 	std::cout << " + CNP";
+	// }
+	// std::cout << "] " << x << std::endl;
 
 	return 0;
 }
@@ -552,7 +616,6 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 	uint64_t seq = ch.ack.seq;
 	uint8_t cnp = (ch.ack.flags >> qbbHeader::FLAG_CNP) & 1;
 
-
 	int i;
 	Ptr<RdmaQueuePair> qp = GetQp(ch.sip, port, qIndex);
 	if (qp == NULL){
@@ -561,6 +624,15 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 
 	uint32_t nic_idx = GetNicIdxOfQp(qp);
 	Ptr<QbbNetDevice> dev = m_nic[nic_idx].dev;
+
+	// std::cout
+	// 	<< Simulator::Now().GetTimeStep() << " "
+	// 	<< "[SENDER]  " << ((ch.l3Prot == 0xFD ? "[NACK]" : " [ACK]")) << " "
+	// 	<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+	// 	<< ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+	// 	<< (ch.l3Prot == 0xFD ? "NACK" : "ACK") << "(" << seq << ")"
+	// 	<< (cnp ? "+CNP" : "") << std::endl;
+
 	if (m_ack_interval == 0)
 		std::cout << "ERROR: shouldn't receive ack\n";
 	else {
@@ -585,16 +657,16 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 				qp->PopulateRetransmissionList(seq, m_mtu);
 			}
 
-			std::cout
-					<< Simulator::Now().GetTimeStep() << " "
-					<< "[SENDER]   [INFO] "
-					<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
-					<< ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
-					<< "RTX list: ";
-				for(auto it = qp->m_retransmissionList.begin(); it != qp->m_retransmissionList.end(); ++it){
-					std::cout << *it << " ";
-				}
-				std::cout << std::endl;
+			// std::cout
+			// 		<< Simulator::Now().GetTimeStep() << " "
+			// 		<< "[SENDER]   [INFO] "
+			// 		<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+			// 		<< ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+			// 		<< "RTX list: ";
+			// 	for(auto it = qp->m_retransmissionList.begin(); it != qp->m_retransmissionList.end(); ++it){
+			// 		std::cout << *it << " ";
+			// 	}
+			// 	std::cout << std::endl;
 		} else {
 			// restart from the last unacknowledged sequence
 			RecoverQueue(qp);
@@ -609,14 +681,6 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 			cnp_received_mlx(qp);
 		} 
 	}
-
-	std::cout
-			<< Simulator::Now().GetTimeStep() << " "
-			<< "[SENDER]  " << ((ch.l3Prot == 0xFD ? "[NACK]" : " [ACK]")) << " "
-			<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
-			<< ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
-			<< (ch.l3Prot == 0xFD ? "NACK" : "ACK") << "(" << seq << ")"
-			<< (cnp ? "+CNP" : "") << std::endl;
 
 	if (m_cc_mode == 3){
 		HandleAckHp(qp, p, ch);
@@ -651,47 +715,115 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch){
 	return 0;
 }
 
-int RdmaHw::ReceiverCheckSeq(uint64_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size){
+std::tuple<int, uint64_t, uint64_t> RdmaHw::ReceiverCheckSeq(uint64_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size){
 	uint64_t expected = q->ReceiverNextExpectedSeq;
+	q->HighestSeqno = std::max(q->HighestSeqno, seq);
 	if (seq == expected){
-		q->ReceiverNextExpectedSeq = expected + size;
-
 		if (m_rtx == 1) { // Selective Repeat
-			// empty out the received packets list until next gap
-			while (q->CheckPsnExists(q->ReceiverNextExpectedSeq)) {
-				q->ReceiverNextExpectedSeq += size;
-				q->m_milestone_rx += size;
+			if (!q->CheckPsnExists(seq)) {
+	            // Flag the packet as received
+				q->AddPsnToList(seq, size);
+
+				// if (!q->m_rxBuffer.empty()){
+				// 	std::cout
+				// 		<< Simulator::Now().GetTimeStep() << " "
+				// 		<< "[RECEIVER] [INFO]"
+				// 		<< "[" << Ipv4Address(q->sip) << "(" << q->sport 
+				// 		<< ") --> " << Ipv4Address(q->dip) << "(" << q->dport << ")] "
+				// 		<< "seq: " << seq << " == expected: " << expected << " - OOO list: ";
+				// 	for(auto it = q->m_rxBuffer.begin(); it != q->m_rxBuffer.end(); ++it){
+				// 		std::cout << (*it).first << "|" << (*it).second << " " << std::endl;
+				// 	}
+				// 	std::cout << std::endl;
+				// }
+
+				uint64_t toAck;
+				uint32_t toAckSize;
+            	uint64_t *nextHole;
+            	std::tie(toAck, toAckSize, nextHole) = q->NextPsnHole();
+
+				// Update the expected seqno to be the next respect to the last acked one
+				q->ReceiverLastExpectedSeq = toAck;
+				q->ReceiverNextExpectedSeq = toAck + toAckSize;
+				q->m_milestone_rx = toAck;
+
+				q->DeleteBelowPsn(q->ReceiverNextExpectedSeq);
+
+				if (q->m_rxSrBuffering) {	
+					if (nextHole != nullptr) {
+	                    // There are still holes
+						// Cumulatively ack pkts up to the last received one and send the NACK for the missing packet
+						auto t = std::make_tuple(6, toAck, *nextHole);
+						delete nextHole;
+						return t;
+					} else {
+	                    // No more holes, clear the buffering flag
+						q->m_rxSrBuffering = false;
+					}
+				}
+			} else {
+	            // We are not buffering, update the expected seqno to be the next respect to the last acked one
+				uint64_t toAck;
+				uint32_t toAckSize;
+            	uint64_t *nextHole;
+            	std::tie(toAck, toAckSize, nextHole) = q->NextPsnHole();
+
+				q->ReceiverLastExpectedSeq = toAck;
+				q->ReceiverNextExpectedSeq = toAck + toAckSize;
+				q->m_milestone_rx = toAck;
+
+				delete nextHole;
 			}
-			q->DeleteBelowPsn(q->ReceiverNextExpectedSeq);
+		} else {
+			q->ReceiverLastExpectedSeq = expected;
+			q->ReceiverNextExpectedSeq = expected + size;
 		}
 
 		if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx){
 			q->m_milestone_rx += m_ack_interval;
-			return 1; //Generate ACK
+			return std::make_tuple(1, 0, 0); //Generate ACK
 		}else if (q->ReceiverNextExpectedSeq % m_chunk == 0){
-			return 1;
+			return std::make_tuple(1, 0, 0);
 		}else {
-			return 5;
+			return std::make_tuple(5, 0, 0);
 		}
 	} else if (seq > expected) {
 		// Generate NACK
 		if (m_rtx == 1) { // Selective Repeat
-			// add the packet to the received packets list
-			q->AddPsnToList(seq);
+			if (!q->CheckPsnExists(seq)) {	// Check if PSN already exists to avoid duplicates
+				q->AddPsnToList(seq, size);
 
-			// if queue not empty, print the receive list
-				if (!q->m_receivedPackets.empty()){
-					std::cout
-						<< Simulator::Now().GetTimeStep() << " "
-						<< "[RECEIVER] [INFO]"
-						<< "[" << Ipv4Address(q->sip) << "(" << q->sport 
-						<< ") --> " << Ipv4Address(q->dip) << "(" << q->dport << ")] "
-						<< "OOO list: ";
-					for(auto it = q->m_receivedPackets.begin(); it != q->m_receivedPackets.end(); ++it){
-						std::cout << *it << " ";
-					}
-					std::cout << std::endl;
+				// if (!q->m_rxBuffer.empty()){
+				// 	std::cout
+				// 		<< Simulator::Now().GetTimeStep() << " "
+				// 		<< "[RECEIVER] [INFO]"
+				// 		<< "[" << Ipv4Address(q->sip) << "(" << q->sport 
+				// 		<< ") --> " << Ipv4Address(q->dip) << "(" << q->dport << ")] "
+				// 		<< "seq: " << seq << " > expected: " << expected << " - OOO list: ";
+				// 	for(auto it = q->m_rxBuffer.begin(); it != q->m_rxBuffer.end(); ++it){
+				// 		std::cout << (*it).first << "|" << (*it).second << " ";
+				// 	}
+				// 	std::cout << std::endl;
+				// }
+
+				// We are not in the buffering phase
+				if (!q->m_rxSrBuffering) {
+					// If we already received some packets, generate an ACK for the acked and a NACK for the current pkt
+					auto ret = (expected > 0) ? std::make_tuple(6, q->ReceiverLastExpectedSeq, expected) : std::make_tuple(2, (uint64_t)0, (uint64_t)0);
+
+                    // Flag that we are buffering packets
+					q->m_rxSrBuffering = true;
+
+					q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
+					q->m_lastNACK = expected;
+					
+					return ret;
+				} else {// We are already buffering, do not generate NACKs!
+					return std::make_tuple(4, 0, 0);
 				}
+			} else {
+				return std::make_tuple(4, 0, 0);
+			}
 		}
 
 		if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected){
@@ -700,12 +832,12 @@ int RdmaHw::ReceiverCheckSeq(uint64_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
 			if (m_backto0){
 				q->ReceiverNextExpectedSeq = q->ReceiverNextExpectedSeq / m_chunk*m_chunk;
 			}
-			return 2;
+			return std::make_tuple(2, 0, 0);
 		}else
-			return 4;
+			return std::make_tuple(4, 0, 0);
 	}else {
-		// Duplicate. 
-		return 3;
+		// Duplicate. ACK right away
+		return std::make_tuple(1, 0, 0);
 	}
 }
 void RdmaHw::AddHeader (Ptr<Packet> p, uint16_t protocolNumber){
@@ -790,13 +922,20 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 	if ((uint64_t)m_mtu < payload_size)
 		payload_size = m_mtu;
 
-	if (m_rtx == 1) { // Selective Repeat
-		// send from the retransmission list
-		if (!qp->m_retransmissionList.empty()) {
-			seq_to_send = qp->m_retransmissionList.front();
-			qp->m_retransmissionList.pop_front();
-		}
+	// send from the retransmission list
+	if (!qp->m_retransmissionList.empty()) {
+		seq_to_send = qp->m_retransmissionList.front();
+		qp->m_retransmissionList.pop_front();
 	}
+
+	// std::cout 	
+	// 	<< Simulator::Now().GetTimeStep() << " " 
+	// 	<< "[SENDER] "
+	// 	<< "[UDP] "
+	// 	<< "[" << Ipv4Address(qp->dip) << "(" << qp->dport 
+	// 	<< ") --> "  << Ipv4Address(qp->sip) << "(" << qp->sport << ")] "
+	// 	<< "[Seq " << seq_to_send << "] "
+	// 	<< "[Size " << payload_size << "] " << std::endl;
 
 	Ptr<Packet> p = Create<Packet> ((uint32_t)payload_size);
 	// add SimpleSeqTsHeader
@@ -1425,12 +1564,6 @@ void RdmaHw::UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader
  * Retransmission Management
  ****************************/
 void RdmaHw::RestartSenderTimer(Ptr<RdmaQueuePair> qp) {
-	std::cout << Simulator::Now().GetTimeStep() << " "
-				<< "[SENDER]  [TIME] "
-				<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
-				<< ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
-				<< "Restart sender timer until " << (Simulator::Now() + MicroSeconds(m_retransmissionTimeout)).GetTimeStep() << std::endl;
-
 	// Cancel existing timer if running
 	if (qp->m_senderTimer.IsRunning()) {
 		Simulator::Cancel(qp->m_senderTimer);
@@ -1440,11 +1573,11 @@ void RdmaHw::RestartSenderTimer(Ptr<RdmaQueuePair> qp) {
 }
 
 void RdmaHw::CancelSenderTimer(Ptr<RdmaQueuePair> qp) {
-	std::cout << Simulator::Now().GetTimeStep() << " "
-				  << "[SENDER]  [TIME] "
-				  << "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
-				  << ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
-				  << "Cancel sender timer" << std::endl;
+	// std::cout << Simulator::Now().GetTimeStep() << " "
+	// 			  << "[SENDER]  [TIME] "
+	// 			  << "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+	// 			  << ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+	// 			  << "Cancel sender timer" << std::endl;
 
 	if (qp->m_senderTimer.IsRunning()) {
 		Simulator::Cancel(qp->m_senderTimer);
@@ -1452,12 +1585,11 @@ void RdmaHw::CancelSenderTimer(Ptr<RdmaQueuePair> qp) {
 }
 
 void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
-	std::cout << Simulator::Now().GetTimeStep() << " "
-				  << "[SENDER]  [TIME] "
-				  << "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
-				  << ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
-				  << "Timeout sender timer" << std::endl;
-
+	// std::cout << Simulator::Now().GetTimeStep() << " "
+	// 			  << "[SENDER]  [TIME] "
+	// 			  << "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
+	// 			  << ") --> " << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+	// 			  << "Timeout sender timer" << std::endl;
 
 	qp->PopulateRetransmissionList(qp->snd_una, m_mtu);
 	RestartSenderTimer(qp);
@@ -1465,62 +1597,6 @@ void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
 	// Trigger transmission to send retransmitted packets
 	uint32_t nic_idx = GetNicIdxOfQp(qp);
 	m_nic[nic_idx].dev->TriggerTransmit();
-}
-
-void RdmaHw::RestartReceiverTimer(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch) {
-	if (rxQp->m_receiverTimer.IsRunning()) {
-		Simulator::Cancel(rxQp->m_receiverTimer);
-	}
-	rxQp->m_receiverTimer = Simulator::Schedule(MicroSeconds(m_nack_interval), &RdmaHw::ReceiverTimeoutHandler, this, rxQp, ch);
-}
-
-void RdmaHw::CancelReceiverTimer(Ptr<RdmaRxQueuePair> rxQp) {
-std::cout << Simulator::Now().GetTimeStep() << " "
-				  << "[RECEIVER][TIME] "
-				  << "[" << Ipv4Address(rxQp->dip) << "(" << rxQp->dport 
-				  << ") --> " << Ipv4Address(rxQp->sip) << "(" << rxQp->sport << ")] "
-				  << "Cancel receiver timer" << std::endl;
-
-	if (rxQp->m_receiverTimer.IsRunning()) {
-		Simulator::Cancel(rxQp->m_receiverTimer);
-	}
-}
-
-void RdmaHw::ReceiverTimeoutHandler(Ptr<RdmaRxQueuePair> rxQp, CustomHeader &ch) {
-	// send NACK like in ReceiveUdp
-	qbbHeader seqh;
-	seqh.SetSeq(rxQp->ReceiverNextExpectedSeq);
-	seqh.SetPG(ch.udp.pg);
-	seqh.SetSport(ch.udp.dport);
-	seqh.SetDport(ch.udp.sport);
-	seqh.SetIntHeader(ch.udp.ih);
-
-	Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
-	newp->AddHeader(seqh);
-
-	Ipv4Header head;	// Prepare IPv4 header
-	head.SetDestination(Ipv4Address(ch.sip));
-	head.SetSource(Ipv4Address(ch.dip));
-	head.SetProtocol(0xFD); //ack=0xFC nack=0xFD
-	head.SetTtl(64);
-	head.SetPayloadSize(newp->GetSize());
-	head.SetIdentification(rxQp->m_ipid++);
-
-	newp->AddHeader(head);
-	AddHeader(newp, 0x800);	// Attach PPP header
-
-	uint32_t nic_idx = GetNicIdxOfRxQp(rxQp);
-	m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp);
-	m_nic[nic_idx].dev->TriggerTransmit();
-
-	std::cout
-			<< Simulator::Now().GetTimeStep() << " "
-			<< "[RECEIVER][TIME] "
-			<< "[" << Ipv4Address(rxQp->dip) << "(" << rxQp->dport 
-			<< ") --> " << Ipv4Address(rxQp->sip) << "(" << rxQp->sport << ")] "
-			<< "=> NACK(" << rxQp->ReceiverNextExpectedSeq << ")" << std::endl;
-
-	RestartReceiverTimer(rxQp, ch);
 }
 
 }

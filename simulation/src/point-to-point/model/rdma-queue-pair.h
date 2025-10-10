@@ -138,6 +138,7 @@ public:
 	uint32_t sip, dip;
 	uint16_t sport, dport;
 	uint16_t m_ipid;
+	uint64_t ReceiverLastExpectedSeq;
 	uint64_t ReceiverNextExpectedSeq;
 	Time m_nackTimer;
 	int32_t m_milestone_rx;
@@ -152,10 +153,13 @@ public:
 	uint32_t GetHash(void);
 
 	// Selective Repeat methods
-	std::list<uint64_t> m_receivedPackets; // Ordered list of received packets for selective repeat
+	std::map<uint64_t, uint32_t> m_rxBuffer; // Ordered list of received packets for selective repeat
+	bool m_rxSrBuffering = false; // Flags that we are buffering
+	uint64_t HighestSeqno;
 	bool CheckPsnExists(uint64_t psn);
 	void DeleteBelowPsn(uint64_t psn);
-	void AddPsnToList(uint64_t psn);
+	void AddPsnToList(uint64_t psn, size_t size);
+	std::tuple<uint64_t, uint32_t, uint64_t *> NextPsnHole();
 };
 
 class RdmaQueuePairGroup : public Object {
