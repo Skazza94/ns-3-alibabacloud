@@ -40,7 +40,8 @@ public:
 	Callback<void> m_notifyAppFinish;
 	Callback<void> m_notifyAppSent;
 
-	std::list<uint64_t> m_retransmissionList; // PSNs to retransmit for SR
+	std::map<uint64_t, uint32_t> m_txBuffer; // PSNs to size transmitted
+	std::map<uint64_t, uint32_t> m_retransmissionBuffer; // PSNs to retransmit for SR
 	EventId m_senderTimer; // Sender timer for SR
 
 	/******************************
@@ -121,7 +122,9 @@ public:
 	bool IsFinished();
 	uint64_t HpGetCurWin(); // window size calculated from hp.m_curRate, used by HPCC
 
-	void PopulateRetransmissionList(uint64_t seq, uint32_t mtu);
+	void PopulateTxBuffer(uint64_t seq, uint32_t size);
+	void DeleteTxBufferBelowPsn(uint64_t seq);
+	void PopulateRetransmissionBuffer(uint64_t seq);
 };
 
 class RdmaRxQueuePair : public Object { // Rx side queue pair

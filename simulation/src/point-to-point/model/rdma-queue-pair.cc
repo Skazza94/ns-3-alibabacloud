@@ -7,6 +7,8 @@
 #include "ns3/ppp-header.h"
 #include "rdma-queue-pair.h"
 
+#include <numeric>
+
 namespace ns3 {
 
 /**************************
@@ -136,14 +138,18 @@ void RdmaQueuePair::SetIsLossy(bool v) {
 }
 
 uint64_t RdmaQueuePair::GetBytesLeft() {
-	uint64_t actual_size = 0;
-	if (m_size >= snd_nxt) {
-		actual_size = m_size - snd_nxt;
+	if (!m_retransmissionBuffer.empty()) { // Selective Repeat
+		/* Get the sum of the bytes to retransmit */
+		uint32_t sum = std::accumulate(
+			m_retransmissionBuffer.begin(), m_retransmissionBuffer.end(), 0u, [](uint32_t acc, const auto& p) {
+				return acc + p.second;
+			}
+		);
+		/* The size is: m_size - snd_nxt = remaining bytes + sum (retransmissions) */
+		return m_size - snd_nxt + sum;
 	}
-	if (!m_retransmissionList.empty()) { // Selective Repeat
-		actual_size = m_size - m_retransmissionList.front();
-	}
-	return actual_size;
+
+	return m_size >= snd_nxt ? m_size - snd_nxt : 0;
 }
 
 uint32_t RdmaQueuePair::GetHash(void){
@@ -173,7 +179,7 @@ uint64_t RdmaQueuePair::GetOnTheFly(){
 
 bool RdmaQueuePair::IsWinBound(){
 	uint64_t w = GetWin();
-	return w != 0 && GetOnTheFly() >= w;
+	return w != 0 && GetOnTheFly() >= w && m_retransmissionBuffer.empty(); // SR: Retransmissions are out of the win boundaries
 }
 
 uint64_t RdmaQueuePair::GetWin(){
@@ -208,8 +214,21 @@ bool RdmaQueuePair::IsFinished(){
 	return snd_una >= m_size;
 }
 
-void RdmaQueuePair::PopulateRetransmissionList(uint64_t seq, uint32_t mtu) {
-	m_retransmissionList.push_back(seq);
+void RdmaQueuePair::PopulateTxBuffer(uint64_t seq, uint32_t size) {
+	if (m_txBuffer.count(seq) > 0)
+		return;
+	
+	m_txBuffer.emplace(seq, size);
+}
+
+void RdmaQueuePair::DeleteTxBufferBelowPsn(uint64_t psn) {
+	auto first_keep = m_txBuffer.lower_bound(psn);
+    m_txBuffer.erase(m_txBuffer.begin(), first_keep);
+}
+
+void RdmaQueuePair::PopulateRetransmissionBuffer(uint64_t seq) {
+	uint32_t size = m_txBuffer[seq];
+	m_retransmissionBuffer.emplace(seq, size);
 }
 
 /*********************

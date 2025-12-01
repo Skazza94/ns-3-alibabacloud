@@ -556,6 +556,7 @@ namespace ns3 {
 		AddHeader(p, 0x800);
 		CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
 		p->PeekHeader(ch);
+		m_tracePfc(type+2); // 2 indicates PFC PAUSE sent.3 indicates RESUME sent
 		SwitchSend(0, p, ch);
 	}
 
@@ -613,27 +614,28 @@ namespace ns3 {
 		m_currentPkt = p;
 		m_phyTxBeginTrace(m_currentPkt);
 		Time txTime = m_bps.CalculateBytesTxTime(p->GetSize());
+		// Skazza: Disabled since it is not resilient with lossy
         //添加当前qp所要发送的最后一个packet txtime后回调 根据mtu
         //根据qpindex
         // 添加一个回调
-		if(m_rdmaEQ!=nullptr&&m_rdmaEQ->m_qpGrp!=nullptr && m_node->GetNodeType() == 0){
-			// int qIndex = m_rdmaEQ->GetNextQindex(m_paused);
-			// if(qIndex != -1024) {
-				// Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
-				// std::cout<<" net: "<<this<<" QPindex: "<<qIndex<<" GetBytesLeft "<<lastQp->GetBytesLeft()<<" p->GetSize() "<<p->GetSize()<<std::endl;
-				// std::cout<<" net: "<<this<<" p->GetSize() "<<p->GetSize()<<std::endl;
-				// if(9000>=lastQp->GetBytesLeft()){
-				if(p->GetSize()<9000&&p->GetSize()>60){	//增加判断当前packet是否是ack报文的逻辑。
-				// if(lastQp->IsFinished()){s
-					// Simulator::Schedule(txTime,&sendfinsh,this);
-					CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
-					// ch.getInt = 1; // parse INT header
-					p->PeekHeader(ch);
-					// std::cout<<" p->GetSize()>=lastQp->GetBytesLeft() "<<std::endl;
-					Simulator::Schedule(txTime,&QbbNetDevice::SendCallback,this,p);
-				}
-			// }
-        }
+		// if(m_rdmaEQ!=nullptr&&m_rdmaEQ->m_qpGrp!=nullptr && m_node->GetNodeType() == 0){
+		// 	// int qIndex = m_rdmaEQ->GetNextQindex(m_paused);
+		// 	// if(qIndex != -1024) {
+		// 		// Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
+		// 		// std::cout<<" net: "<<this<<" QPindex: "<<qIndex<<" GetBytesLeft "<<lastQp->GetBytesLeft()<<" p->GetSize() "<<p->GetSize()<<std::endl;
+		// 		// std::cout<<" net: "<<this<<" p->GetSize() "<<p->GetSize()<<std::endl;
+		// 		// if(9000>=lastQp->GetBytesLeft()){
+		// 		if(p->GetSize()<9000&&p->GetSize()>60){	//增加判断当前packet是否是ack报文的逻辑。
+		// 		// if(lastQp->IsFinished()){s
+		// 			// Simulator::Schedule(txTime,&sendfinsh,this);
+		// 			CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+		// 			// ch.getInt = 1; // parse INT header
+		// 			p->PeekHeader(ch);
+		// 			// std::cout<<" p->GetSize()>=lastQp->GetBytesLeft() "<<std::endl;
+		// 			Simulator::Schedule(txTime,&QbbNetDevice::SendCallback,this,p);
+		// 		}
+		// 	// }
+        // }
 		Time txCompleteTime = txTime + m_tInterframeGap;
 		NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.GetSeconds() << "sec");
 		Simulator::Schedule(txCompleteTime, &QbbNetDevice::TransmitComplete, this);
@@ -663,26 +665,26 @@ namespace ns3 {
 		m_currentPkt = p;
 		m_phyTxBeginTrace(m_currentPkt);
 		Time txTime = m_bps.CalculateBytesTxTime(p->GetSize());
-		if(m_rdmaEQ!=nullptr&&m_rdmaEQ->m_qpGrp!=nullptr && m_node->GetNodeType() == 2){
-			// int qIndex = m_rdmaEQ->GetNextQindex(m_paused);
-			// if(qIndex != -1024) {
-				// Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
-				// std::cout<<" net: "<<this<<" QPindex: "<<qIndex<<" GetBytesLeft "<<lastQp->GetBytesLeft()<<" p->GetSize() "<<p->GetSize()<<std::endl;
-				// std::cout<<" net: "<<this<<" p->GetSize() "<<p->GetSize()<<std::endl;
-				// if(9000>=lastQp->GetBytesLeft()){
-				if(p->GetSize()<9000&&p->GetSize()>60){	//增加判断当前packet是否是ack报文的逻辑。
-				// if(lastQp->IsFinished()){s
-					// Simulator::Schedule(txTime,&sendfinsh,this);
-					CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
-					// ch.getInt = 1; // parse INT header
-					p->PeekHeader(ch);
-					// std::cout<<" p->GetSize()>=lastQp->GetBytesLeft() "<<std::endl;
-					Simulator::Schedule(txTime,&QbbNetDevice::SendCallback,this,p);
-				}
-			// }
-        }
+		// Skazza: Disabled since it is not resilient with lossy
+		// if(m_rdmaEQ!=nullptr&&m_rdmaEQ->m_qpGrp!=nullptr && m_node->GetNodeType() == 2){
+		// 	// int qIndex = m_rdmaEQ->GetNextQindex(m_paused);
+		// 	// if(qIndex != -1024) {
+		// 		// Ptr<RdmaQueuePair> lastQp = m_rdmaEQ->GetQp(qIndex);
+		// 		// std::cout<<" net: "<<this<<" QPindex: "<<qIndex<<" GetBytesLeft "<<lastQp->GetBytesLeft()<<" p->GetSize() "<<p->GetSize()<<std::endl;
+		// 		// std::cout<<" net: "<<this<<" p->GetSize() "<<p->GetSize()<<std::endl;
+		// 		// if(9000>=lastQp->GetBytesLeft()){
+		// 		if(p->GetSize()<9000&&p->GetSize()>60){	//增加判断当前packet是否是ack报文的逻辑。
+		// 		// if(lastQp->IsFinished()){s
+		// 			// Simulator::Schedule(txTime,&sendfinsh,this);
+		// 			CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+		// 			// ch.getInt = 1; // parse INT header
+		// 			p->PeekHeader(ch);
+		// 			// std::cout<<" p->GetSize()>=lastQp->GetBytesLeft() "<<std::endl;
+		// 			Simulator::Schedule(txTime,&QbbNetDevice::SendCallback,this,p);
+		// 		}
+		// 	// }
+        // }
 		Time txCompleteTime = txTime + m_tInterframeGap;
-		// std::cout << "txCompleteTime: " << txCompleteTime << std::endl;
 		NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.GetSeconds() << "sec");
 		Simulator::Schedule(txCompleteTime, &QbbNetDevice::SwitchAsHostTransmitComplete, this);
 
