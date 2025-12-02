@@ -200,8 +200,8 @@ TypeId RdmaHw::GetTypeId (void)
 				MakeUintegerAccessor(&RdmaHw::nvls_enable),
 				MakeUintegerChecker<uint32_t>())
 		.AddAttribute("RetransmissionTimeout",
-				"The retransmission timeout interval in microseconds",
-				DoubleValue(50.0),
+				"The retransmission timeout interval in microseconds. 0 is a special value to disable it.",
+				DoubleValue(0.0),
 				MakeDoubleAccessor(&RdmaHw::m_retransmissionTimeout),
 				MakeDoubleChecker<double>());
 	return tid;
@@ -1585,10 +1585,13 @@ void RdmaHw::UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader
  * Retransmission Management
  ****************************/
 void RdmaHw::RestartSenderTimer(Ptr<RdmaQueuePair> qp) {
-	// Cancel existing timer if running
-	CancelSenderTimer(qp);
-
-	qp->m_senderTimer = Simulator::Schedule(MicroSeconds(m_retransmissionTimeout), &RdmaHw::SenderTimeoutHandler, this, qp);
+	/* We only schedule retransmissions if the timeout is > 0 and the QP is lossy (lossless does not need it) */
+	if (m_retransmissionTimeout > 0 && qp->m_isLossy) {
+		/* Cancel existing timer if running */
+		CancelSenderTimer(qp);
+	
+		qp->m_senderTimer = Simulator::Schedule(MicroSeconds(m_retransmissionTimeout), &RdmaHw::SenderTimeoutHandler, this, qp);
+	}
 }
 
 void RdmaHw::CancelSenderTimer(Ptr<RdmaQueuePair> qp) {
@@ -1613,7 +1616,7 @@ void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
 	qp->PopulateRetransmissionBuffer(qp->snd_una);
 	RestartSenderTimer(qp);
 
-	// Trigger transmission to send retransmitted packets
+	/* Trigger transmission to send retransmitted packets */
 	uint32_t nic_idx = GetNicIdxOfQp(qp);
 	m_nic[nic_idx].dev->TriggerTransmit();
 }
