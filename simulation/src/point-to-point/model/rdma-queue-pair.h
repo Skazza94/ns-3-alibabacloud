@@ -13,8 +13,9 @@
 #include <list>
 
 /* =============
-Improved RdmaQueuePair and RdmaRxQueuePair classes to support lossy flows, RTOs and Mellanox Selective Repeat.
+Improved RdmaQueuePair and RdmaRxQueuePair classes to support lossy flows, RTOs, Mellanox Selective Repeat, and Nvidia Adaptive Routing.
 Original RTO and SR code was implemented by Alexandra Udrescu, adapted and improved to this ns3 version by Mariano Scazzariello.
+Implementation of Deferred Acking (Adaptive-Routing-like mechanism) by Mariano Scazzariello.
 ================ */
 
 namespace ns3 {
@@ -36,13 +37,8 @@ public:
 	Time m_nextAvail;	//< Soonest time of next send
 	uint32_t wp; // current window of packets
 	uint32_t lastPktSize;
-	bool m_isLossy; // if the QP is lossy
 	Callback<void> m_notifyAppFinish;
 	Callback<void> m_notifyAppSent;
-
-	std::map<uint64_t, uint32_t> m_txBuffer; // PSNs to size transmitted
-	std::map<uint64_t, uint32_t> m_retransmissionBuffer; // PSNs to retransmit for SR
-	EventId m_senderTimer; // Sender timer for SR
 
 	/******************************
 	 * runtime states
@@ -106,7 +102,6 @@ public:
 	void SetVarWin(bool v);
 	void SetAppNotifyCallback(Callback<void> notifyAppFinish);
 	void SetAppSentCallback(Callback<void> notifyAppSent);
-	void SetIsLossy(bool v);
 
 	uint64_t GetBytesLeft();
 	uint64_t GetInitialSize();
@@ -122,9 +117,26 @@ public:
 	bool IsFinished();
 	uint64_t HpGetCurWin(); // window size calculated from hp.m_curRate, used by HPCC
 
+	/* Lossy QP */
+	bool m_isLossy; // if the QP is lossy
+	void SetIsLossy(bool v);
+
+	/* TX Buffering */
+	std::map<uint64_t, uint32_t> m_txBuffer; // PSNs to size transmitted
+	std::map<uint64_t, Time> m_txSendTime; // seq -> last (re)send time
 	void PopulateTxBuffer(uint64_t seq, uint32_t size);
 	void DeleteTxBufferBelowPsn(uint64_t seq);
+	void NoteTxTime(uint64_t seq, Time t);
+	void ClearTxTimesBelowPsn(uint64_t psn);
+	bool GetEarliestTimeout(Time rto, Time &deltaOut) const;
+
+	/* RTX Buffering */
+	std::map<uint64_t, uint32_t> m_retransmissionBuffer; // PSNs to retransmit
+	EventId m_senderTimer; // Sender timer
 	void PopulateRetransmissionBuffer(uint64_t seq);
+
+	/* Deferred Acking */
+	bool m_daEnable; // DA enabled for this QP
 };
 
 class RdmaRxQueuePair : public Object { // Rx side queue pair
@@ -155,14 +167,27 @@ public:
 	RdmaRxQueuePair();
 	uint32_t GetHash(void);
 
-	// Selective Repeat methods
-	std::map<uint64_t, uint32_t> m_rxBuffer; // Ordered list of received packets for selective repeat
-	bool m_rxSrBuffering = false; // Flags that we are buffering
-	uint64_t HighestSeqno;
+	/* RX Buffering */
+	std::map<uint64_t, uint32_t> m_rxBuffer; // Ordered list of received packets
 	bool CheckPsnExists(uint64_t psn);
 	void DeleteBelowPsn(uint64_t psn);
 	void AddPsnToList(uint64_t psn, size_t size);
-	std::tuple<uint64_t, uint32_t, uint64_t *> NextPsnHole();
+
+	/* Selective Repeat */
+	struct SrPsnResult {
+		bool advanced;         		// did we move the cumulative point?
+		uint64_t lastPktStart;     	// start PSN of last contiguous packet
+		uint32_t lastPktSize;      	// size of that packet
+		bool hasHole;          		// true if there is at least one hole
+		uint64_t firstHole;        	// PSN of first missing packet (if hasHole)
+	};
+	bool m_rxSrBuffering = false; // Flags that we are buffering
+	uint64_t HighestSeqno = 0;
+	SrPsnResult AdvancePsnContiguous(); // PSN advancement
+
+	/* Deferred Acking */
+	bool m_daEnable; // DA enabled for this QP
+	uint64_t m_lastAckedSeq = 0; // Keeps track of the last ACKed pkt
 };
 
 class RdmaQueuePairGroup : public Object {

@@ -74,6 +74,8 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
 	hpccPint.m_incStage = 0;
 
 	m_isLossy = false;
+
+	m_daEnable = false;
 }
 
 void RdmaQueuePair::SetSize(uint64_t size){
@@ -214,6 +216,7 @@ bool RdmaQueuePair::IsFinished(){
 	return snd_una >= m_size;
 }
 
+/* TX Buffering */
 void RdmaQueuePair::PopulateTxBuffer(uint64_t seq, uint32_t size) {
 	if (m_txBuffer.count(seq) > 0)
 		return;
@@ -226,6 +229,49 @@ void RdmaQueuePair::DeleteTxBufferBelowPsn(uint64_t psn) {
     m_txBuffer.erase(m_txBuffer.begin(), first_keep);
 }
 
+void RdmaQueuePair::NoteTxTime(uint64_t seq, Time t) {
+    m_txSendTime[seq] = t;
+}
+
+void RdmaQueuePair::ClearTxTimesBelowPsn(uint64_t psn) {
+    auto first_keep = m_txSendTime.lower_bound(psn);
+    m_txSendTime.erase(m_txSendTime.begin(), first_keep);
+}
+
+bool RdmaQueuePair::GetEarliestTimeout(Time rto, Time &deltaOut) const {
+    if (m_txSendTime.empty()) {
+        return false;
+    }
+
+    Time now = Simulator::Now();
+    Time best = Time::Max();
+	bool found = false;
+    for (const auto &kv : m_txSendTime) {
+        if (kv.first < snd_una) {
+            continue;
+        }
+
+        Time expire = kv.second + rto;
+        if (expire < best) {
+			best = expire;
+			found = true;
+        }
+    }
+
+	if (!found) {
+        return false;
+    }
+
+    if (best <= now) {
+		deltaOut = Time(0);
+    } else {
+		deltaOut = best - now;
+    }
+
+    return true;
+}
+
+/* RTX Buffering */
 void RdmaQueuePair::PopulateRetransmissionBuffer(uint64_t seq) {
 	uint32_t size = m_txBuffer[seq];
 	m_retransmissionBuffer.emplace(seq, size);
@@ -251,6 +297,9 @@ RdmaRxQueuePair::RdmaRxQueuePair(){
 	m_nackTimer = Time(0);
 	m_milestone_rx = 0;
 	m_lastNACK = 0;
+
+	m_daEnable = false;
+	m_lastAckedSeq = 0;
 }
 
 uint32_t RdmaRxQueuePair::GetHash(void){
@@ -281,40 +330,72 @@ void RdmaRxQueuePair::DeleteBelowPsn(uint64_t psn) {
     m_rxBuffer.erase(m_rxBuffer.begin(), first_keep);
 }
 
-std::tuple<uint64_t, uint32_t, uint64_t *> RdmaRxQueuePair::NextPsnHole()
-{
-    uint64_t lastAcked = ReceiverLastExpectedSeq;
-	uint64_t *retSeqno = nullptr;
-    for (uint64_t seqno = ReceiverNextExpectedSeq; seqno <= HighestSeqno;)
-    {
-		// std::cout
-		// 		<< Simulator::Now().GetTimeStep() << " "
-		// 		<< "[RECEIVER] [INFO] NextPsnHole "
-		// 		<< "[" << Ipv4Address(sip) << "(" << sport 
-		// 		<< ") --> " << Ipv4Address(dip) << "(" << dport << ")] "
-		// 		<< "curr seqno " << seqno << " lastAcked " << lastAcked << " HighestSeqno " << HighestSeqno << std::endl;
+RdmaRxQueuePair::SrPsnResult RdmaRxQueuePair::AdvancePsnContiguous() {
+    SrPsnResult res{
+		.advanced = false,
+		.lastPktStart = ReceiverLastExpectedSeq,
+		.lastPktSize = 0,
+		.hasHole = false,
+		.firstHole = 0
+	};
+    uint64_t cur = ReceiverNextExpectedSeq;
 
-        if (!CheckPsnExists(seqno))
-        {
-			// std::cout
-			// 	<< Simulator::Now().GetTimeStep() << " "
-			// 	<< "[RECEIVER] [INFO]"
-			// 	<< "[" << Ipv4Address(sip) << "(" << sport 
-			// 	<< ") --> " << Ipv4Address(dip) << "(" << dport << ")] "
-			// 	<< "there is an hole at " << seqno << std::endl;
+	// std::cout
+    //     << Simulator::Now().GetTimeStep() << " "
+    //     << "[RECEIVER] [INFO]"
+    //     << "[" << Ipv4Address(sip) << "(" << sport
+    //     << ") --> " << Ipv4Address(dip) << "(" << dport << ")] "
+    //     << "[SR][AdvancePsnContiguous START] "
+    //     << "Next=" << ReceiverNextExpectedSeq
+    //     << " Last=" << ReceiverLastExpectedSeq
+    //     << " Highest=" << HighestSeqno
+    //     << " rxBuf=" << m_rxBuffer.size()
+    //     << std::endl;
 
-            retSeqno = new uint64_t;
-            std::memcpy(retSeqno, &seqno, sizeof(uint64_t));
+    /* Walk contiguous packets starting at "cur" */
+    while (true) {
+        auto it = m_rxBuffer.find(cur);
+        if (it == m_rxBuffer.end())
+            break;
 
-			break;
-        } else {
-			// Advance by size
-	        lastAcked = seqno;
-			seqno += m_rxBuffer[seqno];
-		}
+        res.advanced = true;
+        res.lastPktStart = cur;
+        res.lastPktSize = it->second;
+        
+		cur += it->second;
     }
 
-	return std::make_tuple(lastAcked, m_rxBuffer[lastAcked], retSeqno);
+    if (res.advanced) {
+        /* Update cumulative point */
+        ReceiverLastExpectedSeq = res.lastPktStart;
+        ReceiverNextExpectedSeq = cur;
+
+        /* Remove fully consumed packets from buffer */
+        DeleteBelowPsn(ReceiverNextExpectedSeq);
+    }
+
+    /* If we have seen packets beyond the cumulative point, there is at least one hole at "ReceiverNextExpectedSeq". */
+    if (ReceiverNextExpectedSeq < HighestSeqno) {
+        res.hasHole = true;
+        res.firstHole = ReceiverNextExpectedSeq;
+    }
+
+	// std::cout
+    //     << Simulator::Now().GetTimeStep() << " "
+    //     << "[RECEIVER] [INFO]"
+    //     << "[" << Ipv4Address(sip) << "(" << sport
+    //     << ") --> " << Ipv4Address(dip) << "(" << dport << ")] "
+    //     << "[SR][AdvancePsnContiguous END] "
+    //     << "advanced=" << res.advanced
+    //     << " lastPktStart=" << res.lastPktStart
+    //     << " lastPktSize=" << res.lastPktSize
+    //     << " hasHole=" << res.hasHole
+    //     << " firstHole=" << res.firstHole
+    //     << " newNext=" << ReceiverNextExpectedSeq
+    //     << " newLast=" << ReceiverLastExpectedSeq
+    //     << std::endl;
+
+    return res;
 }
 
 /*********************
