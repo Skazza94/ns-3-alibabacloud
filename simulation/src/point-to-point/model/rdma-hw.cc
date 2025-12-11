@@ -1727,13 +1727,12 @@ void RdmaHw::RestartSenderTimer(Ptr<RdmaQueuePair> qp) {
 			return;
 		} 
 
-		/* Add a 20% of jitter to the time so we do not end up syncing! */
-		const double jitterFrac = 0.2;
+		/* Add a 20% of skewing to the time so we do not end up syncing! */
+		const double skewFrac = 0.2;
 		double u = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
-		double factor = 1.0 + jitterFrac * u;
-		Time jitteredDelta = MicroSeconds(delta.GetMicroSeconds() * factor);
-
-    	qp->m_senderTimer = Simulator::Schedule(delta, &RdmaHw::SenderTimeoutHandler, this, qp);
+		double factor = 1.0 + skewFrac * u;
+		Time skewedDelta = MicroSeconds(delta.GetNanoSeconds() * factor);
+    	qp->m_senderTimer = Simulator::Schedule(skewedDelta, &RdmaHw::SenderTimeoutHandler, this, qp);
 	}
 }
 

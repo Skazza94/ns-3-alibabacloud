@@ -263,7 +263,7 @@ bool RdmaQueuePair::GetEarliestTimeout(Time rto, Time &deltaOut) const {
     }
 
     if (best <= now) {
-		deltaOut = Time(0);
+		deltaOut = Time(1);
     } else {
 		deltaOut = best - now;
     }
