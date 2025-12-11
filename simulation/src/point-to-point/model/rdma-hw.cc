@@ -194,6 +194,12 @@ TypeId RdmaHw::GetTypeId (void)
 				UintegerValue(0),
 				MakeUintegerAccessor(&RdmaHw::nvls_enable),
 				MakeUintegerChecker<uint32_t>())
+		/* Taken from: https://www.usenix.org/system/files/atc25-peng-yajuan.pdf */
+		.AddAttribute("MinTimeBetweenCnps",
+				"Interval for Receiver Responding with CNP (ns)",
+				UintegerValue(4000),
+				MakeUintegerAccessor(&RdmaHw::m_min_time_between_cnps),
+				MakeUintegerChecker<uint64_t>())
 		.AddAttribute("RetransmissionTimeout",
 				"The retransmission timeout interval in microseconds. 0 is a special value to disable it.",
 				DoubleValue(0.0),
@@ -204,10 +210,10 @@ TypeId RdmaHw::GetTypeId (void)
 				UintegerValue(0),
 				MakeUintegerAccessor(&RdmaHw::SetL2Retransmission, &RdmaHw::GetL2Retransmission),
 				MakeUintegerChecker<uint32_t>())
-		.AddAttribute("DeferredAckingEnable",
-				"Enable Deferred Acking.",
+		.AddAttribute("OOOReorderEnable",
+				"Enable OOO Packet Reordering.",
 				BooleanValue(false),
-				MakeBooleanAccessor(&RdmaHw::SetDeferredAckingEnable, &RdmaHw::GetDeferredAckingEnable),
+				MakeBooleanAccessor(&RdmaHw::SetOOOReorderEnable, &RdmaHw::GetOOOReorderEnable),
 				MakeBooleanChecker());
 	return tid;
 }
@@ -228,8 +234,8 @@ void RdmaHw::SetL2Retransmission(uint32_t v) {
         v = 1;
     }
 
-    if (v == 1 && m_daEnable) {
-        m_daEnable = false;
+    if (v == 1 && m_oooReorderEnable) {
+        m_oooReorderEnable = false;
     }
 
     m_rtx = v;
@@ -239,16 +245,16 @@ uint32_t RdmaHw::GetL2Retransmission(void) const {
     return m_rtx;
 }
 
-void RdmaHw::SetDeferredAckingEnable(bool v) {
+void RdmaHw::SetOOOReorderEnable(bool v) {
     if (v && m_rtx == 1) {
         m_rtx = 0;
     }
 
-    m_daEnable = v;
+    m_oooReorderEnable = v;
 }
 
-bool RdmaHw::GetDeferredAckingEnable(void) const {
-    return m_daEnable;
+bool RdmaHw::GetOOOReorderEnable(void) const {
+    return m_oooReorderEnable;
 }
 
 void RdmaHw::add_nvswitch(uint32_t nvswitch_id) {
@@ -359,8 +365,8 @@ void RdmaHw::AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t si
 	if(nvls_enable == 1) qp->nvls_enable = 1;
 	else qp->nvls_enable = 0;
 
-	/* DA mode */
-	qp->m_daEnable = m_daEnable;
+	/* OOO Reorder mode */
+	qp->m_oooReorderEnable = m_oooReorderEnable;
 
 	// Notify Nic
 	m_nic[nic_idx].dev->NewQp(qp);
@@ -397,9 +403,9 @@ Ptr<RdmaRxQueuePair> RdmaHw::GetRxQp(uint32_t sip, uint32_t dip, uint16_t sport,
         q->dport = dport;
         q->m_ecn_source.qIndex = pg;
 
-		/* DA mode */
-		q->m_daEnable = m_daEnable;
-        if (q->m_daEnable) {
+		/* OOO Reorder mode */
+		q->m_oooReorderEnable = m_oooReorderEnable;
+        if (q->m_oooReorderEnable) {
             q->m_milestone_rx = m_ack_interval;
 			q->m_lastAckedSeq = 0;
         }
@@ -481,8 +487,8 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	}
 	rxQp->m_ecn_source.total++;
 	/* Normal mode, reset milestone each time. */
-    /* In DA mode, we maintain m_milestone_rx across packets. */
-    if (!rxQp->m_daEnable) {
+    /* In OOO Reorder mode, we maintain m_milestone_rx across packets. */
+    if (!rxQp->m_oooReorderEnable) {
         rxQp->m_milestone_rx = m_ack_interval;
     }
 
@@ -495,10 +501,10 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	// 	<< "[Seq " << ch.udp.seq << "] "
 	// 	<< "[Size " << payload_size << "] " << std::endl;
 
-	/* DA Enabled, use different logic */
+	/* OOO Reorder Enabled, use different logic */
 	int x, toAck, toNack;
-    if (rxQp->m_daEnable) {
-        std::tie(x, toAck, toNack) = DeferredAckingCheck(rxQp, ch.udp.seq, payload_size);
+    if (rxQp->m_oooReorderEnable) {
+        std::tie(x, toAck, toNack) = OOOReorderCheck(rxQp, ch.udp.seq, payload_size);
     } else {
 		std::tie(x, toAck, toNack) = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);
 	}
@@ -509,8 +515,14 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 		seqh.SetSport(ch.udp.dport);
 		seqh.SetDport(ch.udp.sport);
 		seqh.SetIntHeader(ch.udp.ih);
-		if (ecnbits)
-			seqh.SetCnp();
+		if (ecnbits) {
+			if (Simulator::Now() >= m_last_cnp_time) {
+				seqh.SetCnp();
+				m_last_cnp_time = Simulator::Now() + NanoSeconds(m_min_time_between_cnps);
+			} else {
+				ecnbits = 0;
+			}
+		}
 
 		Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
 		newp->AddHeader(seqh);
@@ -545,8 +557,14 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 		seqh.SetSport(ch.udp.dport);
 		seqh.SetDport(ch.udp.sport);
 		seqh.SetIntHeader(ch.udp.ih);
-		if (ecnbits)
-			seqh.SetCnp();
+		if (ecnbits) {
+			if (Simulator::Now() >= m_last_cnp_time) {
+				seqh.SetCnp();
+				m_last_cnp_time = Simulator::Now() + NanoSeconds(m_min_time_between_cnps);
+			} else {
+				ecnbits = 0;
+			}
+		}
 
 		Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
 		newp->AddHeader(seqh);
@@ -576,8 +594,6 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 		seqh1.SetSport(ch.udp.dport);
 		seqh1.SetDport(ch.udp.sport);
 		seqh1.SetIntHeader(ch.udp.ih);
-		if (ecnbits)
-			seqh1.SetCnp();
 
 		Ptr<Packet> newp1 = Create<Packet>(std::max(60-14-20-(int)seqh1.GetSerializedSize(), 0));
 		newp1->AddHeader(seqh1);
@@ -593,11 +609,46 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 
 		newp1->AddHeader(head1);
 		AddHeader(newp1, 0x800);
-		// Enqueue only
 		m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp1);
 
 		if(did == m_node->GetId() && m_node->GetNodeType() == 2 && ch.m_tos == 4) m_nic[nic_idx].dev->SwitchAsHostSend();
 		else m_nic[nic_idx].dev->TriggerTransmit();
+	} else if (x == 4 && ecnbits) {
+		/* We should not ACK/NACK but send a pure CNP! */
+		if (Simulator::Now() >= m_last_cnp_time) {
+			/* It is time to send a CNP */
+			CnHeader cn_hdr;
+			cn_hdr.SetSeq(ch.udp.seq);
+			cn_hdr.SetQindex(ch.udp.pg);
+			cn_hdr.SetFlow(ch.udp.sport);
+	
+			Ptr<Packet> cnp = Create<Packet>(std::max(64-14-20-16, 0));
+			cnp->AddHeader(cn_hdr);
+	
+			Ipv4Header ipv4;
+			ipv4.SetDestination(Ipv4Address(ch.sip));
+			ipv4.SetSource(Ipv4Address(ch.dip));
+			ipv4.SetProtocol(0xFF);
+			ipv4.SetTtl(64);
+			ipv4.SetPayloadSize(cnp->GetSize());
+			ipv4.SetIdentification(rxQp->m_ipid++);
+			if(ch.m_tos == 4) ipv4.SetTos(4);
+	
+			cnp->AddHeader(ipv4);
+			AddHeader(cnp, 0x800);
+	
+			uint32_t dip = ch.dip;
+			uint32_t did = (dip >> 8) & 0xffff;
+			uint32_t nic_idx = GetNicIdxOfRxQp(rxQp);
+			m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(cnp);
+			if(did == m_node->GetId() && m_node->GetNodeType() == 2 && ch.m_tos == 4) m_nic[nic_idx].dev->SwitchAsHostSend();
+			else m_nic[nic_idx].dev->TriggerTransmit();
+			
+			m_last_cnp_time = Simulator::Now() + NanoSeconds(m_min_time_between_cnps);
+		} else {
+			/* Not time to send a CNP */
+			ecnbits = 0;
+		}
 	}
 
 	// std::cout 	
@@ -613,9 +664,12 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	// 	std::cout << "NACK" << "(" << rxQp->ReceiverNextExpectedSeq << ")";
 	// }else if (x == 6) {
 	// 	std::cout << "ACK" << "(" << toAck << ") and NACK" << "(" << toNack << ")";
+	// } else if (x == 4 && ecnbits) {
+	// 	std::cout << "CNP";
 	// } else
 	// 	std::cout << "NONE";
-	// if (ecnbits != 0) {
+
+	// if (x != 4 && ecnbits != 0) {
 	// 	std::cout << " + CNP";
 	// }
 	// std::cout << "] " << x << std::endl;
@@ -640,8 +694,11 @@ int RdmaHw::ReceiveCnp(Ptr<Packet> p, CustomHeader &ch){
 	uint32_t i;
 	// get qp
 	Ptr<RdmaQueuePair> qp = GetQp(ch.sip, udpport, qIndex);
-	if (qp == NULL)
-		std::cout << "ERROR: QCN NIC cannot find the flow\n";
+	if (qp == NULL) {
+		/* QP completed when the CNP is received, return */
+		// std::cout << "ERROR: QCN NIC cannot find the flow\n";
+		return 0;
+	}
 	// get nic
 	uint32_t nic_idx = GetNicIdxOfQp(qp);
 	Ptr<QbbNetDevice> dev = m_nic[nic_idx].dev;
@@ -663,6 +720,14 @@ int RdmaHw::ReceiveCnp(Ptr<Packet> p, CustomHeader &ch){
 			qp->hpccPint.m_curRate = dev->GetDataRate();
 		}
 	}
+
+	// Handle simple CNP packets here for DCQCN, not piggybacked on ACK/NACK
+	if (m_cc_mode == 1 && qp != nullptr) {
+		uint64_t key = GetQpKey(qp->dip.Get(), qp->sport, qp->m_pg);
+		qp_cnp[key]++; // update for the number of cnp this qp has received
+		cnp_received_mlx(qp);
+	}
+
 	return 0;
 }
 
@@ -706,7 +771,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 	}
 
 	if (ch.l3Prot == 0xFC) { // ACK
-		if (m_rtx == 1 || m_daEnable) {
+		if (m_rtx == 1 || m_oooReorderEnable) {
 			/* Delete below the received PSN */
 			qp->DeleteTxBufferBelowPsn(seq);
 		} 
@@ -723,7 +788,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 	}
 	
 	if (ch.l3Prot == 0xFD) { // NACK
-		if (m_rtx == 1) {
+		if (m_rtx == 1 || m_oooReorderEnable) { /* When in OOO Reorder mode, only Fast NACKs from the switches can be received. This is safe then :) */
 			/* add the NACK'd sequence to retransmission list */
 			if (seq >= qp->snd_una && qp->m_retransmissionBuffer.count(seq) == 0) {
 				qp->PopulateRetransmissionBuffer(seq);
@@ -1058,7 +1123,7 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 	// std::cout << "current snd_nxt is: " << qp->snd_nxt << ", the window is: " << qp->m_win << std::endl;
 	qp->m_ipid++;
 
-	if (m_rtx == 1 || m_daEnable) {
+	if (m_rtx == 1 || m_oooReorderEnable) {
 		qp->PopulateTxBuffer(seq_to_send, payload_size);
 	}
 
@@ -1661,7 +1726,13 @@ void RdmaHw::RestartSenderTimer(Ptr<RdmaQueuePair> qp) {
 		if (!has) {
 			return;
 		} 
-	
+
+		/* Add a 20% of jitter to the time so we do not end up syncing! */
+		const double jitterFrac = 0.2;
+		double u = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
+		double factor = 1.0 + jitterFrac * u;
+		Time jitteredDelta = MicroSeconds(delta.GetMicroSeconds() * factor);
+
     	qp->m_senderTimer = Simulator::Schedule(delta, &RdmaHw::SenderTimeoutHandler, this, qp);
 	}
 }
@@ -1688,7 +1759,7 @@ void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
 	Time now = Simulator::Now();
     Time rto = MicroSeconds(m_retransmissionTimeout);
 
-	if (m_rtx == 0 && !m_daEnable) {
+	if (m_rtx == 0 && !m_oooReorderEnable) {
         /* GBN Retransmission */
         if (!qp->m_txSendTime.empty()) {
             /* Find timestamp for snd_una or the first >= snd_una */
@@ -1701,7 +1772,7 @@ void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
             }
         }
     } else {
-		/* Selective Repeat or Deferred Acking */
+		/* Selective Repeat or OOO Reorder */
 		/* For each outstanding PSN, check if its own timer expired */
 		for (auto &kv : qp->m_txSendTime) {
 			uint64_t seq = kv.first;
@@ -1731,16 +1802,16 @@ void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
 }
 
 /******************************
- * Deferred Acking Management
+ * OOO Reorder Management
  ******************************/
-std::tuple<int, uint64_t, uint64_t> RdmaHw::DeferredAckingCheck(Ptr<RdmaRxQueuePair> rxQp, uint64_t seq, uint32_t payload_size) {
+std::tuple<int, uint64_t, uint64_t> RdmaHw::OOOReorderCheck(Ptr<RdmaRxQueuePair> rxQp, uint64_t seq, uint32_t payload_size) {
 	auto logAndReturn = [&](int code, uint64_t ack, uint64_t nack) {
 		// std::cout
 		// 	<< Simulator::Now().GetTimeStep() << " "
 		// 	<< "[RECEIVER] [INFO]"
 		// 	<< "[" << Ipv4Address(rxQp->sip) << "(" << rxQp->sport
 		// 	<< ") --> " << Ipv4Address(rxQp->dip) << "(" << rxQp->dport << ")] "
-		// 	<< "[DeferredAckingCheck] "
+		// 	<< "[OOOReorderCheck] "
 		// 	<< "code=" << code
 		// 	<< " ackSeq=" << ack
 		// 	<< " nackSeq=NULL"
@@ -1794,27 +1865,9 @@ std::tuple<int, uint64_t, uint64_t> RdmaHw::DeferredAckingCheck(Ptr<RdmaRxQueueP
 
 	uint64_t newNext = rxQp->ReceiverNextExpectedSeq;
 
-    bool mustAck = false;
-    /* (a) First-progress ACK: avoid deadlock on early loss */
-    if (lastAck == 0 && newNext > 0) {
-        mustAck = true;
-    }
-    /* (b) Threshold-based ACKs: every m_ack_interval bytes of delivered */
-    else if (m_ack_interval > 0 && newNext > lastAck && newNext - lastAck >= (uint64_t)m_ack_interval) {
-		mustAck = true;
-    }
-    /* (c) Hole recovery ACK: if we already had OOO data beyond oldNext and this packet moves the frontier, ACK */
-    else if (hadAheadBefore) {
-        mustAck = true;
-    }
-	/* (d) Tail recovery ACK: if the packet is shorter than MTU, treat it as flow tail and ACK it */
-    else if (payload_size < m_mtu && newNext > lastAck) {
-        mustAck = true;
-    }
-
-    if (!mustAck || newNext <= lastAck) {
-		/* No ACK to send */
-        return logAndReturn(4, 0, 0);
+    if (newNext <= lastAck) {
+		/* Send duplicate ACK */
+    	return logAndReturn(1, lastAck, 0);
     }
 
 	rxQp->m_lastAckedSeq = newNext;

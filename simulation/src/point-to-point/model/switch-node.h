@@ -7,6 +7,10 @@
 #include "switch-mmu.h"
 #include "pint.h"
 
+/* =============
+Improved SwitchNode class to support Nvidia-like per-packet ECMP Adaptive Routing and DCP by Mariano Scazzariello.
+================ */
+
 namespace ns3 {
 
 class Packet;
@@ -34,8 +38,26 @@ protected:
 
 	uint32_t m_ackHighPrio; // set high priority for ACK/NACK
 
+	/* Per-Packet ECMP knobs */
+	bool m_pktEcmpEnable;
+    uint64_t m_pktEcmpQlenThresholdBytes;
+    uint64_t m_pktEcmpHysteresisBytes;
+
+	/* Fast NACK knob */
+	bool m_fastNackEnable;
+
 private:
-	int GetOutDev(Ptr<const Packet>, CustomHeader &ch);
+    int GetOutDev(Ptr<const Packet>, CustomHeader &ch);
+	/* Per-Flow ECMP */
+	int GetOutDevFlowEcmp(Ptr<const Packet>, CustomHeader &ch);
+    /* Per-Packet ECMP */
+	int GetOutDevPktEcmp(Ptr<const Packet>, CustomHeader &ch);
+	/* Helper to get Port Bytes */
+    uint64_t GetPortQlenBytes(uint32_t outDev) const;
+
+	/* Fast NACK generation */
+	Ptr<Packet> GenFastNack(Ptr<Packet> ori_pkt, CustomHeader &ch);
+
 	void SendToDev(Ptr<Packet>p, CustomHeader &ch);
 	static uint32_t EcmpHash(const uint8_t* key, size_t len, uint32_t seed);
 	void CheckAndSendPfc(uint32_t inDev, uint32_t qIndex);

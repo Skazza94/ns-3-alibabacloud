@@ -12,9 +12,9 @@
 #include "pint.h"
 
 /* =============
-Improved RdmaHw class to support lossy flows, RTOs, Mellanox Selective Repeat, and Nvidia Adaptive Routing.
-Original RTO and SR code was implemented by Alexandra Udrescu, adapted and improved to this ns3 version by Mariano Scazzariello.
-Implementation of Deferred Acking (Adaptive-Routing-like mechanism) by Mariano Scazzariello.
+Improved RdmaHw class to support lossy flows, RTOs, Mellanox Selective Repeat, Nvidia Adaptive Routing, and DCP.
+Original RTO and SR code was implemented by Alexandra Udrescu, improved by Mariano Scazzariello.
+Implementation of OOO Reorder (Adaptive-Routing-like mechanism + DCP) by Mariano Scazzariello.
 ================ */
 
 namespace ns3 {
@@ -56,16 +56,18 @@ public:
 	uint32_t m_gpus_per_server; // uesed for routing; if src and dst in the same server, then communicate by nvswitch.
 	uint32_t nvls_enable;
 	std::set<uint32_t> nvswitch_set;
+	Time m_last_cnp_time = Time(0);
+	uint64_t m_min_time_between_cnps;
 
 	// Retransmission Configuration
 	uint32_t m_rtx;
 	void SetL2Retransmission(uint32_t v);
 	uint32_t GetL2Retransmission(void) const;
 	
-	// Deferred Acking configuration
-	bool m_daEnable;
-	void SetDeferredAckingEnable(bool v);
-	bool GetDeferredAckingEnable(void) const;
+	// OOO Reorder configuration
+	bool m_oooReorderEnable;
+	void SetOOOReorderEnable(bool v);
+	bool GetOOOReorderEnable(void) const;
 
 	// qp complete callback
 	typedef Callback<void, Ptr<RdmaQueuePair> > QpCompleteCallback;
@@ -211,9 +213,9 @@ public:
 	void SenderTimeoutHandler(Ptr<RdmaQueuePair> qp);
 
 	/******************************
-	 * Deferred Acking Management
+	 * OOO Reorder Management
 	 ******************************/
-	std::tuple<int, uint64_t, uint64_t> DeferredAckingCheck(Ptr<RdmaRxQueuePair> rxQp, uint64_t seq, uint32_t payload_size);
+	std::tuple<int, uint64_t, uint64_t> OOOReorderCheck(Ptr<RdmaRxQueuePair> rxQp, uint64_t seq, uint32_t payload_size);
 };
 
 } /* namespace ns3 */

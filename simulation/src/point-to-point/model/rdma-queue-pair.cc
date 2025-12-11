@@ -75,7 +75,7 @@ RdmaQueuePair::RdmaQueuePair(uint16_t pg, Ipv4Address _sip, Ipv4Address _dip, ui
 
 	m_isLossy = false;
 
-	m_daEnable = false;
+	m_oooReorderEnable = false;
 }
 
 void RdmaQueuePair::SetSize(uint64_t size){
@@ -298,7 +298,7 @@ RdmaRxQueuePair::RdmaRxQueuePair(){
 	m_milestone_rx = 0;
 	m_lastNACK = 0;
 
-	m_daEnable = false;
+	m_oooReorderEnable = false;
 	m_lastAckedSeq = 0;
 }
 

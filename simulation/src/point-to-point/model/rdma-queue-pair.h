@@ -13,9 +13,9 @@
 #include <list>
 
 /* =============
-Improved RdmaQueuePair and RdmaRxQueuePair classes to support lossy flows, RTOs, Mellanox Selective Repeat, and Nvidia Adaptive Routing.
-Original RTO and SR code was implemented by Alexandra Udrescu, adapted and improved to this ns3 version by Mariano Scazzariello.
-Implementation of Deferred Acking (Adaptive-Routing-like mechanism) by Mariano Scazzariello.
+Improved RdmaQueuePair and RdmaRxQueuePair classes to support lossy flows, RTOs, Mellanox Selective Repeat, Nvidia Adaptive Routing, and DCP.
+Original RTO and SR code was implemented by Alexandra Udrescu, improved by Mariano Scazzariello.
+Implementation of OOO Reorder (Adaptive-Routing-like mechanism + DCP) by Mariano Scazzariello.
 ================ */
 
 namespace ns3 {
@@ -135,8 +135,8 @@ public:
 	EventId m_senderTimer; // Sender timer
 	void PopulateRetransmissionBuffer(uint64_t seq);
 
-	/* Deferred Acking */
-	bool m_daEnable; // DA enabled for this QP
+	/* OOO Reorder */
+	bool m_oooReorderEnable;
 };
 
 class RdmaRxQueuePair : public Object { // Rx side queue pair
@@ -160,9 +160,6 @@ public:
 	uint32_t m_lastNACK;
 	EventId QcnTimerEvent; // if destroy this rxQp, remember to cancel this timer
 
-	// Receiver timer for retransmission
-	EventId m_receiverTimer;
-
 	static TypeId GetTypeId (void);
 	RdmaRxQueuePair();
 	uint32_t GetHash(void);
@@ -185,8 +182,8 @@ public:
 	uint64_t HighestSeqno = 0;
 	SrPsnResult AdvancePsnContiguous(); // PSN advancement
 
-	/* Deferred Acking */
-	bool m_daEnable; // DA enabled for this QP
+	/* OOO Reorder */
+	bool m_oooReorderEnable;
 	uint64_t m_lastAckedSeq = 0; // Keeps track of the last ACKed pkt
 };
 

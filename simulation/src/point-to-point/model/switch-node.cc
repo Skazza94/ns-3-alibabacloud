@@ -1,6 +1,7 @@
 #include "ns3/ipv4.h"
 #include "ns3/packet.h"
 #include "ns3/ipv4-header.h"
+#include "ns3/qbb-header.h"
 #include "ns3/pause-header.h"
 #include "ns3/flow-id-tag.h"
 #include "ns3/boolean.h"
@@ -42,6 +43,26 @@ TypeId SwitchNode::GetTypeId (void)
 			UintegerValue(9000),
 			MakeUintegerAccessor(&SwitchNode::m_maxRtt),
 			MakeUintegerChecker<uint32_t>())
+    .AddAttribute("PktEcmpEnable",
+			"Enable per-packet ECMP.",
+			BooleanValue(false),
+			MakeBooleanAccessor(&SwitchNode::m_pktEcmpEnable),
+			MakeBooleanChecker())
+    .AddAttribute("PktEcmpQlenThresholdBytes",
+			"Queue length threshold (bytes) above which per-packet ECMP may deflect packets.",
+			UintegerValue(16384),
+			MakeUintegerAccessor(&SwitchNode::m_pktEcmpQlenThresholdBytes),
+			MakeUintegerChecker<uint64_t>())
+    .AddAttribute("PktEcmpHysteresisBytes",
+        	"Minimum queue-length advantage (bytes) a candidate port must have to override base ECMP.",
+			UintegerValue(4096),
+			MakeUintegerAccessor(&SwitchNode::m_pktEcmpHysteresisBytes),
+			MakeUintegerChecker<uint64_t>())
+	.AddAttribute("FastNackEnable",
+			"Enable the generation of a NACK instead of dropping a packet (DCP-like).",
+			BooleanValue(false),
+			MakeBooleanAccessor(&SwitchNode::m_fastNackEnable),
+			MakeBooleanChecker())
   ;
   return tid;
 }
@@ -62,7 +83,32 @@ SwitchNode::SwitchNode(){
 		m_u[i] = 0;
 }
 
-int SwitchNode::GetOutDev(Ptr<const Packet> p, CustomHeader &ch){
+uint64_t SwitchNode::GetPortQlenBytes(uint32_t outDev) const {
+    if (!m_mmu) {
+        return 0;
+    }
+    if (outDev >= pCnt) {
+        return 0;
+    }
+
+    uint64_t port_len = 0;
+    for (uint32_t j = 0; j < qCnt; ++j) {
+        port_len += m_mmu->egress_bytes[outDev][j];
+    }
+
+    return port_len;
+}
+
+int SwitchNode::GetOutDev(Ptr<const Packet> p, CustomHeader &ch) {
+	if (!m_pktEcmpEnable) {
+		/* Default, do per-flow ECMP */
+        return GetOutDevFlowEcmp(p, ch);
+    }
+	/* Do per-packet ECMP */
+    return GetOutDevPktEcmp(p, ch);
+}
+
+int SwitchNode::GetOutDevFlowEcmp(Ptr<const Packet> p, CustomHeader &ch) {
 	// look up entries
 	auto entry = m_rtTable.find(ch.dip);
 
@@ -89,6 +135,89 @@ int SwitchNode::GetOutDev(Ptr<const Packet> p, CustomHeader &ch){
 
 	uint32_t idx = EcmpHash(buf.u8, 12, m_ecmpSeed) % nexthops.size();
 	return nexthops[idx];
+}
+
+int SwitchNode::GetOutDevPktEcmp(Ptr<const Packet> p, CustomHeader &ch) {
+    auto entry = m_rtTable.find(ch.dip);
+    if (entry == m_rtTable.end()) {
+        return -1;
+    }
+
+    auto &nexthops = entry->second;
+    if (nexthops.empty()) {
+        return -1;
+    }	
+    if (nexthops.size() == 1) {
+        /* Single path: no point in doing per-packet */
+        return nexthops[0];
+    }
+
+	/* Get default per-flow ECMP port */
+	int basePort = GetOutDevFlowEcmp(p, ch);
+
+    /* Apply per-packet only on data packets, so if it is a control packet, return per-flow ECMP */
+    if (ch.l3Prot == 0xFF || ch.l3Prot == 0xFE || ch.l3Prot == 0xFD || ch.l3Prot == 0xFC) {
+        return basePort;
+    }
+
+	/* Get congestion of per-flow ECMP port */
+    uint64_t baseCost = GetPortQlenBytes(basePort);
+	
+	/* Still ok, do not deflect */
+    if (baseCost <= m_pktEcmpQlenThresholdBytes) {
+        return basePort;
+    }
+
+    /* Congested, scan candidates for a significantly better port */
+    uint32_t bestPort = basePort;
+    uint64_t bestCost = baseCost;
+    for (uint32_t i = 0; i < nexthops.size(); ++i) {
+        uint32_t candPort = nexthops[i];
+        uint64_t candCost = GetPortQlenBytes(candPort);
+        if (candCost < bestCost) {
+            bestCost = candCost;
+            bestPort = candPort;
+        }
+    }
+
+    /* No better port, return */
+    if (bestPort == basePort) {
+        return basePort;
+    }
+
+    /* Change only if cost is much more better (also considering the hysteresis)! */
+    if (baseCost > bestCost + m_pktEcmpHysteresisBytes) {
+        return bestPort;
+    } else {
+        return basePort;
+    }
+}
+
+Ptr<Packet> SwitchNode::GenFastNack(Ptr<Packet> ori_pkt, CustomHeader &ch) {
+	qbbHeader seqh;
+	seqh.SetSeq(ch.udp.seq);
+	seqh.SetPG(ch.udp.pg);
+	seqh.SetSport(ch.udp.dport);
+	seqh.SetDport(ch.udp.sport);
+	seqh.SetIntHeader(ch.udp.ih);
+
+	Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
+	newp->AddHeader(seqh);
+
+	Ipv4Header ipv4;
+	ipv4.SetDestination(Ipv4Address(ch.sip));
+	ipv4.SetSource(Ipv4Address(ch.dip));
+	ipv4.SetProtocol(0xFD); // nack=0xFD
+	ipv4.SetTtl(64);
+	ipv4.SetPayloadSize(newp->GetSize());
+	ipv4.SetIdentification(ch.ipid);
+	newp->AddHeader(ipv4);
+
+	PppHeader ppp;
+	ppp.SetProtocol(0x0021);
+	newp->AddHeader(ppp);
+
+    return newp;
 }
 
 void SwitchNode::CheckAndSendPfc(uint32_t inDev, uint32_t qIndex){
@@ -137,11 +266,21 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize(), type);
 				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize(), type);
 			}else{
-				return; // Drop
+				if (m_fastNackEnable && ch.l3Prot == 0x11) {
+					/* Fast NACK enable and packet is UDP */
+					Ptr<Packet> nack = GenFastNack(p, ch);
+					CustomHeader nack_ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+					nack->PeekHeader(nack_ch);
+					/* Send NACK on highest priority queue */
+					m_devices[inDev]->SwitchSend(0, nack, nack_ch);
+				}
+
+				/* Drop the original packet */
+				return;
 			}
 			CheckAndSendPfc(inDev, qIndex);
+			m_bytes[inDev][idx][qIndex] += p->GetSize();
 		}
-		m_bytes[inDev][idx][qIndex] += p->GetSize();
 		m_devices[idx]->SwitchSend(qIndex, p, ch);
 	}else
 	{
