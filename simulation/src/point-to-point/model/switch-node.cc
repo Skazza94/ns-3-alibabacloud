@@ -200,6 +200,7 @@ Ptr<Packet> SwitchNode::GenFastNack(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 	seqh.SetSport(ch.udp.dport);
 	seqh.SetDport(ch.udp.sport);
 	seqh.SetIntHeader(ch.udp.ih);
+	seqh.SetCnp();	/* Always piggyback a CNP since we want to reduce the rate! */
 
 	Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
 	newp->AddHeader(seqh);

@@ -722,7 +722,7 @@ int RdmaHw::ReceiveCnp(Ptr<Packet> p, CustomHeader &ch){
 	}
 
 	// Handle simple CNP packets here for DCQCN, not piggybacked on ACK/NACK
-	if (m_cc_mode == 1 && qp != nullptr) {
+	if (m_cc_mode == 1) {
 		uint64_t key = GetQpKey(qp->dip.Get(), qp->sport, qp->m_pg);
 		qp_cnp[key]++; // update for the number of cnp this qp has received
 		cnp_received_mlx(qp);
@@ -788,22 +788,17 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 	}
 	
 	if (ch.l3Prot == 0xFD) { // NACK
-		if (m_rtx == 1 || m_oooReorderEnable) { /* When in OOO Reorder mode, only Fast NACKs from the switches can be received. This is safe then :) */
+		if (m_rtx == 1) {
 			/* add the NACK'd sequence to retransmission list */
 			if (seq >= qp->snd_una && qp->m_retransmissionBuffer.count(seq) == 0) {
 				qp->PopulateRetransmissionBuffer(seq);
 			}
-
-			// std::cout
-			// 		<< Simulator::Now().GetTimeStep() << " "
-			// 		<< "[SENDER]   [INFO] "
-			// 		<< "[" << Ipv4Address(qp->dip) << "(" << qp->dport 
-			// 		<< ") --> " << Ipv4Address(qp->sip) << "(" << qp->sport << ")] "
-			// 		<< "RTX list: ";
-			// 	for(auto it = qp->m_retransmissionBuffer.begin(); it != qp->m_retransmissionBuffer.end(); ++it){
-			// 		std::cout << (*it).first << "/" << (*it).second << " ";
-			// 	}
-			// 	std::cout << std::endl;
+		} else if (m_oooReorderEnable) {
+			/* Only Fast NACKs from the switches can be received when in OOO Reorder. This is safe then :) */
+			/* In this case, we do not check if it is >= snd_una, it could happen to receive any type of NACK */
+			if (qp->m_retransmissionBuffer.count(seq) == 0) {
+				qp->PopulateRetransmissionBuffer(seq);
+			}
 		} else {
 			// restart from the last unacknowledged sequence
 			RecoverQueue(qp);

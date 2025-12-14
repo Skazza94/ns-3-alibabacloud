@@ -8,7 +8,7 @@
 #include "pint.h"
 
 /* =============
-Improved SwitchNode class to support Nvidia-like per-packet ECMP Adaptive Routing and DCP by Mariano Scazzariello.
+Improved SwitchNode class to support Nvidia-like per-packet ECMP Adaptive Routing and Fast NACKs (DCP-like) by Mariano Scazzariello.
 ================ */
 
 namespace ns3 {
