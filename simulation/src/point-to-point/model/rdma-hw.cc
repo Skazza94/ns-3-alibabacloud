@@ -472,6 +472,11 @@ void RdmaHw::SendComplete(Ptr<RdmaQueuePair> qp)
 {
 	NS_ASSERT(!m_sendCompleteCallback.IsNull());
 
+	// std::cout
+	// 	<< Simulator::Now().GetTimeStep() << " "
+	// 	<< "[SENDER] [COMPLETED] [" << Ipv4Address(qp->dip) << "(" << qp->dport 
+	// 	<< ") --> " << Ipv4Address(qp->sip) << "(" << qp->sport << ")] (tag " << qp->m_tag << ")" << std::endl;
+
 	m_sendCompleteCallback(qp);
 }
 
@@ -750,7 +755,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 	// 	<< Simulator::Now().GetTimeStep() << " "
 	// 	<< "[SENDER]  " << ((ch.l3Prot == 0xFD ? "[NACK]" : " [ACK]")) << " "
 	// 	<< "[" << Ipv4Address(qp->dip) << "(" << qp->dport 
-	// 	<< ") --> " << Ipv4Address(qp->sip) << "(" << qp->sport << ")] "
+	// 	<< ") --> " << Ipv4Address(qp->sip) << "(" << qp->sport << ")] (tag " << qp->m_tag << ")"
 	// 	<< (ch.l3Prot == 0xFD ? "NACK" : "ACK") << "(" << seq << ")"
 	// 	<< (cnp ? "+CNP" : "") << std::endl;
 
@@ -1072,7 +1077,7 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 	// 	<< "[SENDER] "
 	// 	<< "[UDP] "
 	// 	<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
-	// 	<< ") --> "  << Ipv4Address(qp->dip) << "(" << qp->dport << ")] "
+	// 	<< ") --> "  << Ipv4Address(qp->dip) << "(" << qp->dport << ")] (tag " << qp->m_tag << ")"
 	// 	<< "[Seq " << seq_to_send << "] "
 	// 	<< "[Size " << payload_size << "] " << std::endl;
 
@@ -1850,7 +1855,7 @@ std::tuple<int, uint64_t, uint64_t> RdmaHw::OOOReorderCheck(Ptr<RdmaRxQueuePair>
 
     bool advanced = (delivered > oldNext);
     if (!advanced) {
-        return logAndReturn(4, 0, 0);
+        return logAndReturn(1, oldNext, 0);
     }
 
     rxQp->ReceiverLastExpectedSeq = oldNext;
