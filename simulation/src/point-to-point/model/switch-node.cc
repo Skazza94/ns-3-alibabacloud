@@ -13,6 +13,7 @@
 #include "ns3/int-header.h"
 #include "ns3/simulator.h"
 #include "ns3/priority-tag.h"
+#include "ns3/simple-seq-ts-header.h"
 
 #include <cmath>
 
@@ -63,6 +64,16 @@ TypeId SwitchNode::GetTypeId (void)
 			BooleanValue(false),
 			MakeBooleanAccessor(&SwitchNode::m_fastNackEnable),
 			MakeBooleanChecker())
+	.AddAttribute("SpongeEnable",
+			"Enable the deflection instead of dropping a packet.",
+			BooleanValue(false),
+			MakeBooleanAccessor(&SwitchNode::m_spongeEnable),
+			MakeBooleanChecker())
+	.AddAttribute("SpongeIp",
+			"Set the IP of the sponge where to send packets.",
+			UintegerValue(0),
+			MakeUintegerAccessor(&SwitchNode::m_spongeIp),
+			MakeUintegerChecker<uint32_t>())
   ;
   return tid;
 }
@@ -193,7 +204,7 @@ int SwitchNode::GetOutDevPktEcmp(Ptr<const Packet> p, CustomHeader &ch) {
     }
 }
 
-Ptr<Packet> SwitchNode::GenFastNack(Ptr<Packet> ori_pkt, CustomHeader &ch) {
+Ptr<Packet> SwitchNode::GenFastNack(CustomHeader &ch) {
 	qbbHeader seqh;
 	seqh.SetSeq(ch.udp.seq);
 	seqh.SetPG(ch.udp.pg);
@@ -217,6 +228,71 @@ Ptr<Packet> SwitchNode::GenFastNack(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 	PppHeader ppp;
 	ppp.SetProtocol(0x0021);
 	newp->AddHeader(ppp);
+
+    return newp;
+}
+
+Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
+	uint32_t payload_size = ori_pkt->GetSize() - ch.GetSerializedSize();
+	Ptr<Packet> newp = Create<Packet>(payload_size);
+
+	SpongeHeader sh;
+	sh.m_osip = ch.sip;
+	sh.m_odip = ch.dip;
+	sh.m_osport = ch.udp.sport;
+	sh.m_odport = ch.udp.dport;
+
+	SimpleSeqTsHeader seqTs;
+	seqTs.SetSeq(ch.udp.seq);
+	seqTs.SetPG(ch.udp.pg);
+	seqTs.ih = ch.udp.ih;
+	seqTs.sh = sh;
+	newp->AddHeader(seqTs);
+
+	UdpHeader udpHeader;
+	udpHeader.SetDestinationPort(0xD3F1);
+	udpHeader.SetSourcePort((1024 + GetId()) % (1<<16));
+	newp->AddHeader(udpHeader);
+
+	Ipv4Header ipv4;
+	ipv4.SetDestination(Ipv4Address(m_spongeIp));
+	ipv4.SetSource(Ipv4Address(0xc8ffff01));
+	ipv4.SetProtocol(0x11);
+	ipv4.SetTtl(64);
+	ipv4.SetPayloadSize(newp->GetSize());
+	ipv4.SetIdentification(ch.ipid);
+	newp->AddHeader(ipv4);
+
+	PppHeader ppp;
+	ppp.SetProtocol(0x0021);
+	newp->AddHeader(ppp);
+
+	/* Copy tags */
+	ByteTagIterator it = ori_pkt->GetByteTagIterator();
+	while (it.HasNext())
+	{
+		ByteTagIterator::Item tag_item = it.Next();
+		Callback<ObjectBase*> constructor = tag_item.GetTypeId().GetConstructor();
+
+		Tag* tag = dynamic_cast<Tag*>(constructor());
+		NS_ASSERT(tag != nullptr);
+		tag_item.GetTag(*tag);
+
+		newp->AddByteTag(*tag);
+	}
+
+	PacketTagIterator pit = ori_pkt->GetPacketTagIterator();
+	while (pit.HasNext())
+	{
+		PacketTagIterator::Item tag_item = pit.Next();
+		Callback<ObjectBase*> constructor = tag_item.GetTypeId().GetConstructor();
+
+		Tag* tag = dynamic_cast<Tag*>(constructor());
+		NS_ASSERT(tag != nullptr);
+		tag_item.GetTag(*tag);
+
+		newp->AddPacketTag(*tag);
+	}
 
     return newp;
 }
@@ -269,11 +345,25 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 			}else{
 				if (m_fastNackEnable && ch.l3Prot == 0x11) {
 					/* Fast NACK enable and packet is UDP */
-					Ptr<Packet> nack = GenFastNack(p, ch);
+					Ptr<Packet> nack = GenFastNack(ch);
 					CustomHeader nack_ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
 					nack->PeekHeader(nack_ch);
 					/* Send NACK on highest priority queue */
 					m_devices[inDev]->SwitchSend(0, nack, nack_ch);
+				}
+
+				if (m_spongeEnable && ch.l3Prot == 0x11) {
+					/* Generate the packet for the sponge */
+					p = DoSpongePacket(p, ch);
+					/* Peek again ch (it changed) */
+					p->PeekHeader(ch);
+
+					/* Re-do ECMP towards the sponge */
+					idx = GetOutDev(p, ch);
+
+					/* Repeat below since we are prematurely returning */
+					m_bytes[inDev][idx][qIndex] += p->GetSize();
+					m_devices[idx]->SwitchSend(qIndex, p, ch);
 				}
 
 				/* Drop the original packet */

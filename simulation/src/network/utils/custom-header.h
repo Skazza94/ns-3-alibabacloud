@@ -23,6 +23,7 @@
 
 #include "ns3/header.h"
 #include "ns3/int-header.h"
+#include "ns3/sponge-header.h"
 
 namespace ns3 {
 /**
@@ -61,7 +62,7 @@ public:
   virtual void Serialize (Buffer::Iterator start) const;
   virtual uint32_t Deserialize (Buffer::Iterator start);
 
-  uint32_t brief, headerType, getInt;
+  uint32_t brief, headerType, getInt, getSponge;
   enum HeaderType{
 	L2_Header = 1,
 	L3_Header = 2,
@@ -107,7 +108,10 @@ public:
 		  // SeqTsHeader
 		  uint16_t pg;
 		  uint64_t seq;
+      // IntHeader
 		  IntHeader ih;
+      // SpongeHeader
+      SpongeHeader sh;
 	  } udp;
 	  // CnHeader
 	  struct {
@@ -123,7 +127,10 @@ public:
 		  uint16_t flags;
 		  uint16_t pg;
 		  uint64_t seq; // the qbb sequence number.
+      // IntHeader
 		  IntHeader ih;
+      // SpongeHeader
+      SpongeHeader sh;
 	  } ack;
 	  // PauseHeader
 	  struct {

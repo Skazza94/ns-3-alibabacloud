@@ -46,6 +46,10 @@ protected:
 	/* Fast NACK knob */
 	bool m_fastNackEnable;
 
+	/* Sponge know */
+	bool m_spongeEnable;
+	uint32_t m_spongeIp = 0;
+
 private:
     int GetOutDev(Ptr<const Packet>, CustomHeader &ch);
 	/* Per-Flow ECMP */
@@ -56,7 +60,10 @@ private:
     uint64_t GetPortQlenBytes(uint32_t outDev) const;
 
 	/* Fast NACK generation */
-	Ptr<Packet> GenFastNack(Ptr<Packet> ori_pkt, CustomHeader &ch);
+	Ptr<Packet> GenFastNack(CustomHeader &ch);
+
+	/* Sponge Packet generation */
+	Ptr<Packet> DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch);
 
 	void SendToDev(Ptr<Packet>p, CustomHeader &ch);
 	static uint32_t EcmpHash(const uint8_t* key, size_t len, uint32_t seed);

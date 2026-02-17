@@ -330,7 +330,7 @@ namespace ns3 {
 				}
 			}
 			return;
-		}else{   //switch, doesn't care about qcn, just send
+		}else if (m_node->GetNodeType() == 1) {   //switch, doesn't care about qcn, just send
 			p = m_queue->DequeueRR(m_paused);		//this is round-robin
 			if (p != 0){
 				m_snifferTrace(p);
@@ -364,6 +364,12 @@ namespace ns3 {
 						m_nextSend = Simulator::Schedule(t - Simulator::Now(), &QbbNetDevice::DequeueAndTransmit, this);
 					}
 				}
+			}
+		} else if (m_node->GetNodeType() == 3) { // Sponge, skip QP logic
+			p = m_rdmaEQ->m_rdmaGetNxtPkt(nullptr);
+			if (p != 0) {
+				m_traceDequeue(p, 0);
+				TransmitStart(p);
 			}
 		}
 		return;
@@ -494,6 +500,7 @@ namespace ns3 {
 		m_macRxTrace(packet);
 		CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
 		ch.getInt = 1; // parse INT header
+		ch.getSponge = 1; // parse Sponge header
 		packet->PeekHeader(ch);
 		if (ch.l3Prot == 0xFE){ // PFC
 			if (!m_qbbEnabled) return;
@@ -510,7 +517,7 @@ namespace ns3 {
 			uint32_t sid = (sip >> 8) & 0xffff;
 			uint32_t dip = ch.dip;
 			uint32_t did = (dip >> 8) & 0xffff;
-			if (m_node->GetNodeType() > 0 && ch.m_tos != 4 && did != m_node->GetId()){ // switch
+			if ((m_node->GetNodeType() == 1 || m_node->GetNodeType() == 2) && ch.m_tos != 4 && did != m_node->GetId()){ // switch
 				// std::cout << "id: " << m_node->GetId() << " switch receive from " << sid << std::endl;
 				packet->AddPacketTag(FlowIdTag(m_ifIndex));
 				m_node->SwitchReceiveFromDevice(this, packet, ch);
@@ -744,7 +751,7 @@ namespace ns3 {
 			m_rdmaEQ->CleanHighPrio(m_traceDrop);
 			// notify driver/RdmaHw that this link is down
 			m_rdmaLinkDownCb(this);
-		}else { // switch
+		}else if (m_node->GetNodeType() == 1 || m_node->GetNodeType() == 2) { // switch
 			// clean the queue
 			for (uint32_t i = 0; i < qCnt; i++)
 				m_paused[i] = false;
