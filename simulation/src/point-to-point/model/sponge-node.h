@@ -16,8 +16,6 @@ namespace ns3
         SpongeNode();
 
         void SetPort(Ptr<QbbNetDevice> dev);
-        void SetIp(Ipv4Address ip) { m_ip = ip; }
-        Ipv4Address GetIp() const { return m_ip; }
 
     protected:
         void NotifyConstructionCompleted() override;
@@ -29,7 +27,6 @@ namespace ns3
 
         Time m_delay{MicroSeconds(100)};
         Ptr<QbbNetDevice> m_dev;
-        Ipv4Address m_ip;
         
         std::string m_bufSize;
         Ptr<SimpleDropTailQueue> m_queue;
