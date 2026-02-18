@@ -9,6 +9,7 @@ namespace ns3
     class SpongeHeader
     {
     public:
+        uint8_t m_enabled = 0;
         uint32_t m_osip = 0;
         uint32_t m_odip = 0;
         uint32_t m_osport = 0;

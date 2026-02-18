@@ -16,7 +16,12 @@ namespace ns3
                                               "The size of the buffer.",
                                               StringValue("4096MB"),
                                               MakeStringAccessor(&SpongeNode::m_bufSize),
-                                              MakeStringChecker());
+                                              MakeStringChecker())
+                                .AddAttribute("BounceDelay",
+                                              "Time to wait before starting bounce packets.",
+                                              TimeValue(Time("100us")),
+                                              MakeTimeAccessor(&SpongeNode::m_delay),
+                                              MakeTimeChecker());
         return tid;
     }
 
@@ -40,14 +45,13 @@ namespace ns3
         m_dev->SetNode(this);
 
         m_dev->m_rdmaReceiveCb = MakeCallback(&SpongeNode::Receive, this);
-        /* Use this without a QP, but to have a callback to invoke :) */
+        /* Use this without a QP, but to have a callback to invoke for tx :) */
         m_dev->m_rdmaEQ->m_rdmaGetNxtPkt = MakeCallback(&SpongeNode::GetNxtPkt, this);
     }
 
     int SpongeNode::Receive(Ptr<Packet> p, CustomHeader &ch)
     {
         bool success = m_queue->Enqueue(p);
-
         if (success)
         {
             if (m_bounceTimer.IsRunning())
@@ -59,6 +63,7 @@ namespace ns3
         }
     }
 
+    /* Just a proxy function to trigger transmission after the timer expired */
     void SpongeNode::Bounce()
     {
         m_dev->TriggerTransmit();
@@ -83,20 +88,16 @@ namespace ns3
 
         ch.sip = ch.udp.sh.m_osip;
         ch.dip = ch.udp.sh.m_odip;
-
         ch.udp.sport = ch.udp.sh.m_osport;
         ch.udp.dport = ch.udp.sh.m_odport;
 
+        ch.udp.sh.m_enabled = 0;
         ch.udp.sh.m_osip = 0;
         ch.udp.sh.m_odip = 0;
         ch.udp.sh.m_osport = 0;
         ch.udp.sh.m_odport = 0;
 
         p->AddHeader(ch);
-
-        CustomHeader tch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
-        p->PeekHeader(tch);
-        std::cout << Simulator::Now().GetTimeStep() << " [SPONGE] [" << Ipv4Address(tch.sip) << "(" << tch.udp.sport << ") --> " << Ipv4Address(tch.dip) << "(" << tch.udp.dport << ")] [Seq " << tch.udp.seq << "]" << std::endl;
 
         return p;
     }

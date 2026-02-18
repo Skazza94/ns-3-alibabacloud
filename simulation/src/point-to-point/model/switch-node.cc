@@ -69,11 +69,6 @@ TypeId SwitchNode::GetTypeId (void)
 			BooleanValue(false),
 			MakeBooleanAccessor(&SwitchNode::m_spongeEnable),
 			MakeBooleanChecker())
-	.AddAttribute("SpongeIp",
-			"Set the IP of the sponge where to send packets.",
-			UintegerValue(0),
-			MakeUintegerAccessor(&SwitchNode::m_spongeIp),
-			MakeUintegerChecker<uint32_t>())
   ;
   return tid;
 }
@@ -233,10 +228,21 @@ Ptr<Packet> SwitchNode::GenFastNack(CustomHeader &ch) {
 }
 
 Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
+	/* Perform ECMP and pick a sponge, very naive selection */
+	union {
+		uint8_t u8[4+4+2+2];
+		uint32_t u32[3];
+	} buf;
+	buf.u32[0] = ch.sip;
+	buf.u32[1] = ch.dip;
+	buf.u32[2] = ch.udp.sport | ((uint32_t)ch.udp.dport << 16);
+	uint32_t idx = EcmpHash(buf.u8, 12, m_ecmpSeed) % m_spongeIps.size();
+
 	uint32_t payload_size = ori_pkt->GetSize() - ch.GetSerializedSize();
 	Ptr<Packet> newp = Create<Packet>(payload_size);
 
 	SpongeHeader sh;
+	sh.m_enabled = 1;
 	sh.m_osip = ch.sip;
 	sh.m_odip = ch.dip;
 	sh.m_osport = ch.udp.sport;
@@ -244,7 +250,7 @@ Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 
 	SimpleSeqTsHeader seqTs;
 	seqTs.SetSeq(ch.udp.seq);
-	seqTs.SetPG(ch.udp.pg);
+	seqTs.SetPG(4); // Set to lossy
 	seqTs.ih = ch.udp.ih;
 	seqTs.sh = sh;
 	newp->AddHeader(seqTs);
@@ -255,7 +261,7 @@ Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 	newp->AddHeader(udpHeader);
 
 	Ipv4Header ipv4;
-	ipv4.SetDestination(Ipv4Address(m_spongeIp));
+	ipv4.SetDestination(m_spongeIps[idx]);
 	ipv4.SetSource(Ipv4Address(0xc8ffff01));
 	ipv4.SetProtocol(0x11);
 	ipv4.SetTtl(64);
@@ -352,7 +358,7 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 					m_devices[inDev]->SwitchSend(0, nack, nack_ch);
 				}
 
-				if (m_spongeEnable && ch.l3Prot == 0x11) {
+				if (m_spongeEnable && ch.l3Prot == 0x11 && ch.udp.sh.m_enabled == 0) {
 					/* Generate the packet for the sponge */
 					p = DoSpongePacket(p, ch);
 					/* Peek again ch (it changed) */

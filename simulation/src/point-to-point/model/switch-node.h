@@ -46,9 +46,9 @@ protected:
 	/* Fast NACK knob */
 	bool m_fastNackEnable;
 
-	/* Sponge know */
+	/* Sponge knobs */
 	bool m_spongeEnable;
-	uint32_t m_spongeIp = 0;
+	std::vector<Ipv4Address> m_spongeIps;
 
 private:
     int GetOutDev(Ptr<const Packet>, CustomHeader &ch);
@@ -98,6 +98,8 @@ public:
 	 * time, sw_id, port_id, txBytes
 	 */
 	void PrintSwitchBw(FILE* bw_output, uint32_t bw_mon_interval);
+
+	void SetSpongeIps(std::vector<Ipv4Address> spongeIps) { m_spongeIps = spongeIps; }
 };
 
 } /* namespace ns3 */
