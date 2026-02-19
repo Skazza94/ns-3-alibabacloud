@@ -21,7 +21,19 @@ namespace ns3
                                               "Time to wait before starting bounce packets.",
                                               TimeValue(Time("100us")),
                                               MakeTimeAccessor(&SpongeNode::m_delay),
-                                              MakeTimeChecker());
+                                              MakeTimeChecker())
+                                .AddTraceSource("SpongeRx",
+                                                "Packet received by sponge.",
+                                                MakeTraceSourceAccessor(&SpongeNode::m_spongeRx),
+                                                "ns3::TracedCallback")
+                                .AddTraceSource("SpongeDrop",
+                                                "Packet dropped by sponge due to buffer full.",
+                                                MakeTraceSourceAccessor(&SpongeNode::m_spongeDrop),
+                                                "ns3::TracedCallback")
+                                .AddTraceSource("SpongeTx",
+                                                "Packet transmitted by sponge.",
+                                                MakeTraceSourceAccessor(&SpongeNode::m_spongeTx),
+                                                "ns3TracedCallback");
         return tid;
     }
 
@@ -41,7 +53,6 @@ namespace ns3
     void SpongeNode::SetPort(Ptr<QbbNetDevice> dev)
     {
         m_dev = dev;
-
         m_dev->SetNode(this);
 
         m_dev->m_rdmaReceiveCb = MakeCallback(&SpongeNode::Receive, this);
@@ -51,16 +62,29 @@ namespace ns3
 
     int SpongeNode::Receive(Ptr<Packet> p, CustomHeader &ch)
     {
-        bool success = m_queue->Enqueue(p);
-        if (success)
-        {
-            if (m_bounceTimer.IsRunning())
-            {
-                m_bounceTimer.Cancel();
-            }
+        m_rxPkts++;
+        m_rxBytes += p->GetSize();
+        m_spongeRx(p, this);
 
-            m_bounceTimer = Simulator::Schedule(m_delay, &SpongeNode::Bounce, this);
+        bool success = m_queue->Enqueue(p);
+        if (!success)
+        {
+            m_dropPkts++;
+            m_dropBytes += p->GetSize();
+            m_spongeDrop(p, this);
+            return 1;
         }
+
+        m_qPkts += 1;
+        m_qBytes += p->GetSize();
+
+        if (m_bounceTimer.IsRunning())
+        {
+            m_bounceTimer.Cancel();
+        }
+        m_bounceTimer = Simulator::Schedule(m_delay, &SpongeNode::Bounce, this);
+
+        return 0;
     }
 
     /* Just a proxy function to trigger transmission after the timer expired */
@@ -82,6 +106,9 @@ namespace ns3
             return nullptr;
         }
 
+        m_qPkts -= 1;
+        m_qBytes -= p->GetSize();
+
         /* Revert original packet info before sending */
         CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
         p->RemoveHeader(ch);
@@ -99,6 +126,16 @@ namespace ns3
 
         p->AddHeader(ch);
 
+        m_txPkts++;
+        m_txBytes += p->GetSize();
+        m_spongeTx(p, this);
+
         return p;
+    }
+
+    void SpongeNode::PrintUtil(FILE *f, std::string ev)
+    {
+        fprintf(f, "%lu, %u, %s, %lu, %lu, %lu, %lu, %lu, %lu, %lu, %lu\n", Simulator::Now().GetTimeStep(), GetId(), ev.c_str(), m_qPkts, m_qBytes, m_rxPkts, m_rxBytes, m_dropPkts, m_dropBytes, m_txPkts, m_txBytes);
+        fflush(f);
     }
 }
