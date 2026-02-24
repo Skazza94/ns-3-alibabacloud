@@ -11,6 +11,7 @@ namespace ns3
         start.WriteU32(m_odip);
         start.WriteU32(m_osport);
         start.WriteU32(m_odport);
+        start.WriteU16(m_opg);
     }
 
     uint32_t
@@ -21,11 +22,13 @@ namespace ns3
         m_odip = start.ReadU32();
         m_osport = start.ReadU32();
         m_odport = start.ReadU32();
+        m_opg = start.ReadU16();
+        
         return GetStaticSize();
     }
 
     uint32_t SpongeHeader::GetStaticSize()
     {
-        return sizeof(m_enabled) + sizeof(m_osip) + sizeof(m_odip) + sizeof(m_osport) + sizeof(m_odport);
+        return sizeof(m_enabled) + sizeof(m_osip) + sizeof(m_odip) + sizeof(m_osport) + sizeof(m_odport) + sizeof(m_opg);
     }
 }

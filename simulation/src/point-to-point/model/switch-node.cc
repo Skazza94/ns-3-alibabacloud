@@ -247,10 +247,11 @@ Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 	sh.m_odip = ch.dip;
 	sh.m_osport = ch.udp.sport;
 	sh.m_odport = ch.udp.dport;
+	sh.m_opg = ch.udp.pg;
 
 	SimpleSeqTsHeader seqTs;
 	seqTs.SetSeq(ch.udp.seq);
-	seqTs.SetPG(4); // Set to lossy
+	seqTs.SetPG(4); // Force to lossy, we store the original PG in the SpongeHeader
 	seqTs.ih = ch.udp.ih;
 	seqTs.sh = sh;
 	newp->AddHeader(seqTs);
