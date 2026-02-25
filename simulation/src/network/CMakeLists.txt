@@ -76,6 +76,7 @@ set(source_files
     utils/red-queue.cc
     utils/priority-tag.cc
     utils/themis-loop-tag.cc
+    utils/swift-hop-tag.cc
 )
 
 set(header_files
@@ -160,6 +161,7 @@ set(header_files
     utils/red-queue.h
     utils/priority-tag.h
     utils/themis-loop-tag.h
+    utils/swift-hop-tag.h
 )
 
 build_lib(

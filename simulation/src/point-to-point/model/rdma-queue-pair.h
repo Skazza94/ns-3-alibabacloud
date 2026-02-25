@@ -40,6 +40,9 @@ public:
 	Callback<void> m_notifyAppFinish;
 	Callback<void> m_notifyAppSent;
 
+	// Last sent time
+	Time m_last_sent{0};
+
 	/******************************
 	 * runtime states
 	 *****************************/
@@ -90,6 +93,13 @@ public:
 		DataRate m_curRate;
 		uint32_t m_incStage;
 	}hpccPint;
+	struct {
+		double m_cwnd_bytes;
+		double m_cwnd_bytes_past;
+		Time m_last_decrease;
+		uint64_t retransmit_cnt;
+		Time m_pacing_delay{0};
+	} swift;
 
 	/***********
 	 * methods

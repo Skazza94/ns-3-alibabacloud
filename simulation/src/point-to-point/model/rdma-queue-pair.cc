@@ -181,7 +181,21 @@ uint64_t RdmaQueuePair::GetOnTheFly(){
 
 bool RdmaQueuePair::IsWinBound(){
 	uint64_t w = GetWin();
-	return w != 0 && GetOnTheFly() >= w && m_retransmissionBuffer.empty(); // SR: Retransmissions are out of the win boundaries
+	bool result = w != 0 && GetOnTheFly() >= w;
+	
+	if (!m_retransmissionBuffer.empty()) { // SR: Retransmissions are out of the win boundaries
+		return false;
+	}
+	
+	if (swift.m_pacing_delay != Time(0)) { // Swift, bound by pacing delay
+        if (Simulator::Now() < swift.m_pacing_delay) {
+            return true;
+        } else {
+            swift.m_pacing_delay = Time(0);
+        }
+    }
+
+	return result;
 }
 
 uint64_t RdmaQueuePair::GetWin(){

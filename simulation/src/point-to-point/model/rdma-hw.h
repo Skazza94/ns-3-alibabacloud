@@ -5,6 +5,7 @@
 #include <ns3/rdma-queue-pair.h>
 #include <ns3/node.h>
 #include <ns3/custom-header.h>
+#include <ns3/swift-hop-tag.h>
 #include "qbb-net-device.h"
 #include <unordered_map>
 #include <set>
@@ -15,6 +16,7 @@
 Improved RdmaHw class to support lossy flows, RTOs, Mellanox Selective Repeat, Nvidia Adaptive Routing, and DCP.
 Original RTO and SR code was implemented by Alexandra Udrescu, improved by Mariano Scazzariello.
 Implementation of OOO Reorder (Adaptive-Routing-like mechanism + DCP) by Mariano Scazzariello.
+Implementation of Swift by Alexandra Udrescu, improved by Mariano Scazzariello.
 ================ */
 
 namespace ns3 {
@@ -203,6 +205,28 @@ public:
 	void SetPintSmplThresh(double p);
 	void HandleAckHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch);
 	void UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, bool fast_react);
+
+	/*********************
+	 * Swift
+	 ********************/
+	double m_swift_alpha;
+	double m_swift_beta;
+
+	double m_swift_range;
+	double m_swift_minCwnd; // in packets
+	double m_swift_maxCwnd; // in packets
+	double m_swift_perHopScalingFactor;
+	double m_swift_ai;
+	double m_swift_mdGain;
+	double m_swift_maxMdFactor;
+	uint32_t m_swift_retxResetThreshold;
+
+	bool SwiftCanDecrease(Ptr<RdmaQueuePair> qp);
+	double SwiftGetTargetDelay(Ptr<Packet> p, Ptr<RdmaQueuePair> qp, CustomHeader &ch);
+	double SwiftAlpha(Ptr<RdmaQueuePair> qp);
+	double SwiftBeta(Ptr<RdmaQueuePair> qp);
+	void HandleAckSwift(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, uint64_t num_bytes_acked);
+	void SwiftEnforceUpperBound(Ptr<RdmaQueuePair> qp);
 
 	/****************************
 	 * Retransmission Management

@@ -5,6 +5,7 @@
 #include <ns3/node.h>
 #include <ns3/random-variable.h>
 #include <ns3/themis-loop-tag.h>
+#include <ns3/swift-hop-tag.h>
 #include "qbb-net-device.h"
 #include "switch-mmu.h"
 #include "pint.h"
@@ -117,7 +118,7 @@ private:
 	void CheckAndSendResume(uint32_t inDev, uint32_t qIndex);
 
 	/* Fast NACK generation */
-	Ptr<Packet> GenFastNack(CustomHeader &ch);
+	Ptr<Packet> GenFastNack(Ptr<Packet> p, CustomHeader &ch);
 	/* Sponge Packet generation */
 	Ptr<Packet> DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch);
 	/* PD-Quantile */

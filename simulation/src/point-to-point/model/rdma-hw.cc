@@ -179,6 +179,46 @@ TypeId RdmaHw::GetTypeId (void)
 				UintegerValue(65536),
 				MakeUintegerAccessor(&RdmaHw::pint_smpl_thresh),
 				MakeUintegerChecker<uint32_t>())
+		.AddAttribute("SwiftRange",
+				"fs_range of Swift",
+				DoubleValue(100000.0),
+				MakeDoubleAccessor(&RdmaHw::m_swift_range),
+				MakeDoubleChecker<double>())
+		.AddAttribute("SwiftMinCwnd",
+				"fs_min_cwnd of Swift (in packets)", 
+				DoubleValue(0.001),
+				MakeDoubleAccessor(&RdmaHw::m_swift_minCwnd),
+				MakeDoubleChecker<double>())
+		.AddAttribute("SwiftMaxCwnd",
+				"fs_max_cwnd of Swift (in packets)",
+				DoubleValue(256.0),
+				MakeDoubleAccessor(&RdmaHw::m_swift_maxCwnd),
+				MakeDoubleChecker<double>())
+		.AddAttribute("SwiftPerHopScalingFactor",
+				"Per hop scaling for target delay calculation in Swift (in nanoseconds)",
+				DoubleValue(100000.0),
+				MakeDoubleAccessor(&RdmaHw::m_swift_perHopScalingFactor),
+				MakeDoubleChecker<double>())
+		.AddAttribute("SwiftAiFactor",
+				"AI of Swift (per packet)",
+				DoubleValue(1.0),
+				MakeDoubleAccessor(&RdmaHw::m_swift_ai),
+				MakeDoubleChecker<double>())
+		.AddAttribute("SwiftMdGain",
+				"Multiplicative decrease gain (beta) for Swift",
+				DoubleValue(0.8),
+				MakeDoubleAccessor(&RdmaHw::m_swift_mdGain),
+				MakeDoubleChecker<double>())
+		.AddAttribute("SwiftMaxMdf",
+				"Maximum multiplicative decrease factor per event for Swift",
+				DoubleValue(0.5),
+				MakeDoubleAccessor(&RdmaHw::m_swift_maxMdFactor),
+				MakeDoubleChecker<double>())
+		.AddAttribute("SwiftRetxResetThreshold",
+				"Retransmission count threshold for resetting cwnd to min_cwnd in Swift",
+				UintegerValue(5),
+				MakeUintegerAccessor(&RdmaHw::m_swift_retxResetThreshold),
+				MakeUintegerChecker<uint32_t>())
 		.AddAttribute("GPUsPerServer",
 				"the number of gpus in a server, used for routing",
 				UintegerValue(1),
@@ -360,6 +400,13 @@ void RdmaHw::AddQueuePair(uint32_t src, uint32_t dest, uint64_t tag, uint64_t si
 		qp->tmly.m_curRate = m_bps;
 	}else if (m_cc_mode == 10){
 		qp->hpccPint.m_curRate = m_bps;
+	}else if (m_cc_mode == 11){
+		m_swift_alpha = 0;
+		m_swift_beta = 0;
+		qp->swift.m_cwnd_bytes = win;
+        qp->swift.m_cwnd_bytes_past = win;
+		qp->swift.m_last_decrease = Simulator::Now();
+		qp->swift.m_pacing_delay = Time(0);
 	}
 	// NVLS settings
 	if(nvls_enable == 1) qp->nvls_enable = 1;
@@ -506,6 +553,14 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	// 	<< "[Seq " << ch.udp.seq << "] "
 	// 	<< "[Size " << payload_size << "] " << std::endl;
 
+	uint32_t hops = 0;
+	if (m_cc_mode == 11) { // Swift
+		SwiftHopTag hop;
+		if (p->PeekPacketTag(hop)) {
+			hops = hop.GetHops();
+		}
+	}
+
 	/* OOO Reorder Enabled, use different logic */
 	int x, toAck, toNack;
     if (rxQp->m_oooReorderEnable) {
@@ -544,6 +599,13 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 
 		newp->AddHeader(head);
 		AddHeader(newp, 0x800);	// Attach PPP header
+
+		if (m_cc_mode == 11) { // Swift
+			SwiftHopTag hop_tag;
+			hop_tag.SetHops(hops);
+      		newp->AddPacketTag(hop_tag);
+		}
+
 		uint32_t sip = ch.sip;
 		uint32_t sid = (sip >> 8) & 0xffff;
 		uint32_t dip = ch.dip;
@@ -585,6 +647,13 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 
 		newp->AddHeader(head);
 		AddHeader(newp, 0x800);
+
+		if (m_cc_mode == 11) { // Swift
+			SwiftHopTag hop_tag;
+			hop_tag.SetHops(hops);
+      		newp->AddPacketTag(hop_tag);
+		}
+
 		uint32_t sip = ch.sip;
 		uint32_t sid = (sip >> 8) & 0xffff;
 		uint32_t dip = ch.dip;
@@ -614,6 +683,13 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 
 		newp1->AddHeader(head1);
 		AddHeader(newp1, 0x800);
+
+		if (m_cc_mode == 11) { // Swift
+			SwiftHopTag hop_tag;
+			hop_tag.SetHops(hops);
+      		newp1->AddPacketTag(hop_tag);
+		}
+
 		m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp1);
 
 		if(did == m_node->GetId() && m_node->GetNodeType() == 2 && ch.m_tos == 4) m_nic[nic_idx].dev->SwitchAsHostSend();
@@ -759,15 +835,18 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 	// 	<< (ch.l3Prot == 0xFD ? "NACK" : "ACK") << "(" << seq << ")"
 	// 	<< (cnp ? "+CNP" : "") << std::endl;
 
+	uint32_t bytes_acked = 0;
 	if (m_ack_interval == 0)
 		std::cout << "ERROR: shouldn't receive ack\n";
 	else {
+        uint64_t prev_una = qp->snd_una;
 		if (!m_backto0){
 			qp->Acknowledge(seq);
 		}else {
 			uint64_t goback_seq = seq / m_chunk * m_chunk;
 			qp->Acknowledge(goback_seq);
 		}
+        bytes_acked = (qp->snd_una > prev_una) ? (qp->snd_una - prev_una) : 0;
 		
 		if (qp->IsFinished()){
 			SendComplete(qp);
@@ -827,6 +906,8 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 		HandleAckDctcp(qp, p, ch);
 	}else if (m_cc_mode == 10){
 		HandleAckHpPint(qp, p, ch);
+	}else if (m_cc_mode == 11){
+		HandleAckSwift(qp, p, ch, bytes_acked);
 	}
 	uint32_t sip = ch.sip;
 	uint32_t sid = (sip >> 8) & 0xffff;
@@ -1140,11 +1221,18 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 		RestartSenderTimer(qp);
 	}
 
+	if (m_cc_mode == 11) {
+		SwiftHopTag hop_tag;
+		hop_tag.SetHops(0);
+      	p->AddPacketTag(hop_tag);
+	}
+
 	// return
 	return p;
 }
 
 void RdmaHw::PktSent(Ptr<RdmaQueuePair> qp, Ptr<Packet> pkt, Time interframeGap){
+	qp->m_last_sent = Simulator::Now();
 	qp->lastPktSize = pkt->GetSize();
 	UpdateNextAvail(qp, interframeGap, pkt->GetSize());
 }
@@ -1717,6 +1805,109 @@ void RdmaHw::UpdateRateHpPint(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader
        }
 }
 
+/*********************
+ * Swift
+ ********************/
+double RdmaHw::SwiftAlpha(Ptr<RdmaQueuePair> qp) {
+	if (m_swift_alpha != 0)
+		return m_swift_alpha;
+
+	double sqrt1 = 1.0 / std::sqrt(m_swift_maxCwnd);
+	double sqrt2 = 1.0 / std::sqrt(m_swift_minCwnd);
+	double result = m_swift_range / (sqrt1 - sqrt2);
+	m_swift_alpha = result;
+	return result;
+}
+
+double RdmaHw::SwiftBeta(Ptr<RdmaQueuePair> qp) {
+	if (m_swift_beta != 0)
+		return m_swift_beta;
+
+	double result = -SwiftAlpha(qp) / m_swift_maxCwnd;
+	m_swift_beta = result;
+	return result;
+}
+
+double RdmaHw::SwiftGetTargetDelay(Ptr<Packet> p, Ptr<RdmaQueuePair> qp, CustomHeader &ch) {
+	uint64_t number_of_hops = 1;
+	SwiftHopTag hop;
+	if (p->PeekPacketTag(hop)) {
+		number_of_hops = hop.GetHops();
+	}
+	
+	uint64_t base_rtt = qp->m_baseRtt;
+    double cwnd_pkts = qp->swift.m_cwnd_bytes / (double)m_mtu;
+    double result = SwiftAlpha(qp) / cwnd_pkts + SwiftBeta(qp);
+	result = std::min(result, m_swift_range);
+	result = std::max(result, 0.0);
+	return base_rtt + m_swift_perHopScalingFactor * number_of_hops + result;
+}
+
+bool RdmaHw::SwiftCanDecrease(Ptr<RdmaQueuePair> qp) {
+	return Simulator::Now().GetTimeStep() - qp->swift.m_last_decrease.GetTimeStep() >= qp->m_baseRtt;
+}
+
+void RdmaHw::HandleAckSwift(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, uint64_t num_bytes_acked) {
+	if (ch.l3Prot == 0xFD) {
+		qp->swift.retransmit_cnt = 0;
+		
+		if (SwiftCanDecrease(qp)) {
+			qp->swift.m_cwnd_bytes_past = qp->swift.m_cwnd_bytes;
+			qp->swift.m_cwnd_bytes = (1.0 - m_swift_maxMdFactor) * qp->swift.m_cwnd_bytes;
+			SwiftEnforceUpperBound(qp);
+		}
+
+		return;
+	}
+	
+	qp->swift.m_cwnd_bytes_past = qp->swift.m_cwnd_bytes;
+
+	double target_delay = SwiftGetTargetDelay(p, qp, ch);
+	double delay = (double)(Simulator::Now().GetTimeStep() - ch.ack.ih.ts);
+
+    // convert to packets acked for AI calculation
+    double pkts_acked = (double)num_bytes_acked / (double)m_mtu;
+    if (delay < target_delay) {
+        if (qp->swift.m_cwnd_bytes >= m_mtu) {
+            // AI: delta_cwnd_bytes = ai * (packets_acked / cwnd_pkts)
+            double cwnd_pkts = qp->swift.m_cwnd_bytes / (double)m_mtu;
+            qp->swift.m_cwnd_bytes += m_swift_ai * (pkts_acked / cwnd_pkts) * m_mtu;
+        } else {
+            // below 1 packet: grow linearly by ai per packet acked, in bytes
+            qp->swift.m_cwnd_bytes += m_swift_ai * pkts_acked * m_mtu;
+        }
+	} else if (SwiftCanDecrease(qp)) {
+		// Compute proportional multiplicative decrease and cap it
+		double md = m_swift_mdGain * (delay - target_delay) / delay;
+		if (md > m_swift_maxMdFactor) 
+			md = m_swift_maxMdFactor;
+		qp->swift.m_cwnd_bytes = (1.0 - md) * qp->swift.m_cwnd_bytes;
+	}
+    
+	// enforce bounds, update t_last_decrease, and compute pacing + window
+    SwiftEnforceUpperBound(qp);
+}
+
+void RdmaHw::SwiftEnforceUpperBound(Ptr<RdmaQueuePair> qp) {
+    // clamp cwnd in bytes using min/max in packets
+    double min_bytes = m_swift_minCwnd * (double)m_mtu;
+    double max_bytes = m_swift_maxCwnd * (double)m_mtu;
+    if (qp->swift.m_cwnd_bytes > max_bytes)
+        qp->swift.m_cwnd_bytes = max_bytes;
+    if (qp->swift.m_cwnd_bytes < min_bytes)
+        qp->swift.m_cwnd_bytes = min_bytes;
+    if(qp->swift.m_cwnd_bytes < qp->swift.m_cwnd_bytes_past)
+		qp->swift.m_last_decrease = Simulator::Now();
+    
+    if (qp->swift.m_cwnd_bytes < m_mtu) {
+		qp->swift.m_pacing_delay = qp->m_last_sent + NanoSeconds(qp->m_baseRtt / qp->swift.m_cwnd_bytes * (double)m_mtu);
+		qp->SetWin(1); 
+    } else {
+        qp->swift.m_pacing_delay = Time(0);
+        qp->SetWin((uint32_t)qp->swift.m_cwnd_bytes);
+    }
+}
+
 /****************************
  * Retransmission Management
  ****************************/
@@ -1762,6 +1953,20 @@ void RdmaHw::SenderTimeoutHandler(Ptr<RdmaQueuePair> qp) {
 
 	Time now = Simulator::Now();
     Time rto = MicroSeconds(m_retransmissionTimeout);
+
+	if (m_cc_mode == 11) { // Swift
+		qp->swift.retransmit_cnt++;
+		
+		if (qp->swift.retransmit_cnt >= m_swift_retxResetThreshold) {
+			qp->swift.m_cwnd_bytes_past = qp->swift.m_cwnd_bytes;
+			qp->swift.m_cwnd_bytes = m_swift_minCwnd * (double)m_mtu;
+			SwiftEnforceUpperBound(qp);
+		} else if (SwiftCanDecrease(qp)) {
+			qp->swift.m_cwnd_bytes_past = qp->swift.m_cwnd_bytes;
+			qp->swift.m_cwnd_bytes = (1.0 - m_swift_maxMdFactor) * qp->swift.m_cwnd_bytes;
+			SwiftEnforceUpperBound(qp);
+		}
+	}
 
 	if (m_rtx == 0 && !m_oooReorderEnable) {
         /* GBN Retransmission */

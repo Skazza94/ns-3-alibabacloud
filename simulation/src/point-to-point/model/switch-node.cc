@@ -365,7 +365,7 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 			}else{
 				if (m_fastNackEnable && ch.l3Prot == 0x11) {
 					/* Fast NACK enable and packet is UDP */
-					Ptr<Packet> nack = GenFastNack(ch);
+					Ptr<Packet> nack = GenFastNack(p, ch);
 					CustomHeader nack_ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
 					nack->PeekHeader(nack_ch);
 					/* Send NACK on highest priority queue */
@@ -619,6 +619,13 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 					ih->SetPower(power);
 
 				m_u[ifIndex] = newU;
+			} else if (m_ccMode == 11) { // Swift
+				SwiftHopTag hop;
+    			if (p->PeekPacketTag(hop)) {
+        			p->RemovePacketTag(hop);
+        			hop.IncHops();
+        			p->AddPacketTag(hop);
+    			}
 			}
 		}
 	}
@@ -649,7 +656,7 @@ int SwitchNode::log2apprx(int x, int b, int m, int l){
 }
 
 /* Fast NACK generation */
-Ptr<Packet> SwitchNode::GenFastNack(CustomHeader &ch) {
+Ptr<Packet> SwitchNode::GenFastNack(Ptr<Packet> p, CustomHeader &ch) {
 	qbbHeader seqh;
 	seqh.SetSeq(ch.udp.seq);
 	seqh.SetPG(ch.udp.pg);
@@ -673,6 +680,13 @@ Ptr<Packet> SwitchNode::GenFastNack(CustomHeader &ch) {
 	PppHeader ppp;
 	ppp.SetProtocol(0x0021);
 	newp->AddHeader(ppp);
+
+	if (m_ccMode == 11) { // Swift
+		SwiftHopTag hop;
+		if (p->PeekPacketTag(hop)) {
+			newp->AddPacketTag(hop);
+		}
+	}
 
     return newp;
 }
