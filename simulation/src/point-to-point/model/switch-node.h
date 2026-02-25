@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <ns3/node.h>
 #include <ns3/random-variable.h>
+#include <ns3/themis-loop-tag.h>
 #include "qbb-net-device.h"
 #include "switch-mmu.h"
 #include "pint.h"
@@ -11,11 +12,39 @@
 /* =============
 Improved SwitchNode class to support Nvidia-like per-packet ECMP Adaptive Routing and Fast NACKs (DCP-like) by Mariano Scazzariello.
 Sponge Deflection implementation by Mariano Scazzariello, PD-Quantile was implemented by Alexandra Udrescu.
+Themis implementation was imported/polished from original artifact: https://github.com/Networked-System-and-Security-Group/Themis/
 ================ */
 
 namespace ns3 {
 
 class Packet;
+
+struct CnpKey {
+	uint32_t a, b;
+	uint16_t pg, dport, sport;
+
+  	CnpKey(uint32_t a_=0, uint32_t b_=0, uint16_t pg_=0, uint16_t dport_=0, uint16_t sport_=0)
+		: a(a_), b(b_), pg(pg_), dport(dport_), sport(sport_) {}
+
+	bool operator<(const CnpKey &o) const {
+		if (a != o.a) return a < o.a;
+		if (b != o.b) return b < o.b;
+		if (pg != o.pg) return pg < o.pg;
+		if (dport != o.dport) return dport < o.dport;
+		return sport < o.sport;
+	}
+};
+
+struct CnpHandler {
+	uint32_t cnp_num = 0;
+	uint32_t alpha = 1;
+	uint32_t loop_num = 0;
+	uint32_t biggest = 0;
+	Time rec_time = Seconds(0);
+	Time set_last_loop = Seconds(0);
+	std::map<int32_t, int32_t> recover;
+	uint32_t recovered = 0;
+};
 
 class SwitchNode : public Node{
 	static const uint32_t pCnt = 1025;	// Number of ports used
@@ -64,6 +93,15 @@ protected:
 	UniformVariable m_randomVariable;
 	TracedCallback<uint8_t, uint32_t, Ptr<const Packet>, int, int, uint32_t> m_pdDeflectCb;
 
+	/* Themis Knobs */
+	bool m_themisEnable;
+	Time m_cnpMinGap = NanoSeconds(5);
+	Time m_cnpRecoverWindow = MicroSeconds(500);
+	Time m_cnpSendRateLimit = MicroSeconds(5);
+	std::map<CnpKey, CnpHandler> m_cnp_handler;
+	std::map<CnpKey, Time> m_ecn_detector;
+ 	int m_recirculationIndex = pCnt;
+
 private:
     int GetOutDev(Ptr<const Packet>, CustomHeader &ch);
 	/* Per-Flow ECMP */
@@ -85,6 +123,8 @@ private:
 	/* PD-Quantile */
 	double PDComputeQuantile(Ptr<Packet> p, uint32_t dev, uint32_t qIndex);
 	bool PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex);
+	/* Themis */
+  	int ReceiveCnp(Ptr<Packet> p, CustomHeader &ch);
 public:
 	Ptr<SwitchMmu> m_mmu;
 
@@ -115,6 +155,10 @@ public:
 	 */
 	void PrintSwitchBw(FILE* bw_output, uint32_t bw_mon_interval);
 
+	/* Themis */
+	void SetRecirculationPort(int idx) { m_recirculationIndex = idx; }
+
+	/* Sponge */
 	void SetSpongeIps(std::vector<Ipv4Address> spongeIps) { m_spongeIps = spongeIps; }
 };
 

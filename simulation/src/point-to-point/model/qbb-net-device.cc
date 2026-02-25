@@ -567,6 +567,32 @@ namespace ns3 {
 		SwitchSend(0, p, ch);
 	}
 
+	void QbbNetDevice::SendCnp(Ptr<Packet> p, CustomHeader &ch) {
+		CnHeader cn_hdr;
+		cn_hdr.SetSeq(ch.udp.seq);
+		cn_hdr.SetQindex(ch.udp.pg);
+		cn_hdr.SetFlow(ch.udp.sport);
+
+		Ptr<Packet> cnp = Create<Packet>(std::max(64-14-20-16, 0));
+		cnp->AddHeader(cn_hdr);
+
+		Ipv4Header ipv4;
+		ipv4.SetDestination(Ipv4Address(ch.sip));
+		ipv4.SetSource(Ipv4Address(ch.dip));
+		ipv4.SetProtocol(0xFF);
+		ipv4.SetTtl(64);
+		ipv4.SetPayloadSize(cnp->GetSize());
+		ipv4.SetIdentification(ch.ipid);
+		if(ch.m_tos == 4) ipv4.SetTos(4);
+
+		cnp->AddHeader(ipv4);
+		AddHeader(cnp, 0x800);
+
+		CustomHeader ch2(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+		cnp->PeekHeader(ch2);
+		SwitchSend(0, cnp, ch2);
+	}
+
 	Ptr<Packet> QbbNetDevice::NICSendPfc(uint32_t qIndex, uint32_t type) {
 	Ptr<Packet> p = Create<Packet>(0);
 	PauseHeader pauseh((type == 0 ? m_pausetime : 0), m_queue->GetNBytes(qIndex),

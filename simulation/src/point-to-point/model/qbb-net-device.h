@@ -131,6 +131,7 @@ public:
    void SwitchAsHostTransmitComplete(void);
    
 	void SendPfc(uint32_t qIndex, uint32_t type); // type: 0 = pause, 1 = resume
+	void SendCnp(Ptr<Packet> p, CustomHeader &ch);
   Ptr<Packet> NICSendPfc(uint32_t qIndex, uint32_t type);
 
 	TracedCallback<Ptr<const Packet>, uint32_t> m_traceEnqueue;

@@ -83,6 +83,11 @@ TypeId SwitchNode::GetTypeId (void)
 			"Packet deflected by PD-Quantile deflection.",
 			MakeTraceSourceAccessor(&SwitchNode::m_pdDeflectCb),
 			"ns3::TracedCallback")
+	.AddAttribute("ThemisEnabled",
+			"Enable Themis.",
+			BooleanValue(false),
+			MakeBooleanAccessor(&SwitchNode::m_themisEnable),
+			MakeBooleanChecker())
   ;
   return tid;
 }
@@ -226,6 +231,7 @@ void SwitchNode::CheckAndSendPfc(uint32_t inDev, uint32_t qIndex){
 		m_mmu->SetPause(inDev, qIndex);
 	}
 }
+
 void SwitchNode::CheckAndSendResume(uint32_t inDev, uint32_t qIndex){
 	Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(m_devices[inDev]);
 	if (m_mmu->CheckShouldResume(inDev, qIndex)){
@@ -256,6 +262,7 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 		}
 		// std::cout << "qIndex is: " << qIndex << std::endl;
 
+		/* PD-Quantile */
 		if (m_pdQuantileDeflectionEnable && ch.l3Prot == 0x11) {
 			if (PDShouldDeflect(p, (uint32_t)idx, qIndex)) {
 				if (!m_pdDeflectionCandidatesInit) {
@@ -294,6 +301,55 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 					m_pdDeflectCb(1, GetId(), p, idx, -1, qIndex);
 
 					return; /* Drop if no other port is available */
+				}
+			}
+		}
+
+		/* Themis */
+		if (m_themisEnable && (ch.l3Prot == 0x11 || ch.l3Prot == 0xFC || ch.l3Prot == 0xFD || ch.l3Prot == 0xFF)) {
+  			int is_cnp = ReceiveCnp(p, ch);
+  			if (!is_cnp) {
+    			CnpKey fwdKey(ch.sip, ch.dip, ch.udp.pg, ch.udp.sport, ch.udp.dport);
+    			auto it = m_cnp_handler.find(fwdKey);
+				if (it != m_cnp_handler.end()) {
+					CnpHandler &st = it->second;
+					ThemisLoopTag lt;
+					bool has = p->PeekPacketTag(lt);
+					int32_t left = has ? lt.GetLeft() : -1;
+        			if (left != 0) {
+          				if (left < 0) {
+            				left = (int32_t)st.loop_num;
+            				if (left > 0) {
+								idx = m_recirculationIndex;
+								left -= 1;
+								st.recover[left]++;
+            				}
+						} else {
+							st.recover[left]--;
+							left--;
+							if (Simulator::Now() - st.rec_time >= m_cnpRecoverWindow) {
+								st.alpha = std::max<uint32_t>(1, st.alpha / 2);
+								bool anyOutstanding = false;
+								for (auto &kv : st.recover) {
+									if (kv.first > 0 && kv.second != 0) { anyOutstanding = true; break; }
+								}
+								if (!anyOutstanding) {
+									left = 0;
+								}
+							}
+
+							if (left > 0) {
+								idx = m_recirculationIndex;
+								st.recover[left] += 1;
+							} else {
+								left = 0;
+							}
+						}
+
+						lt.SetLeft(left);
+						p->RemovePacketTag(lt);
+						p->AddPacketTag(lt);
+					}	
 				}
 			}
 		}
@@ -437,10 +493,10 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 
 	/* PD-Quantile: maintain histogram on dequeue from egress ifIndex/qIndex */
 	if (m_pdQuantileDeflectionEnable) {
-		CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
-		p->PeekHeader(ch);
-		if (ch.l3Prot == 0x11) {
-			uint64_t bytesLeft = ch.udp.bytesLeft;
+		CustomHeader ch2(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+		p->PeekHeader(ch2);
+		if (ch2.l3Prot == 0x11) {
+			uint64_t bytesLeft = ch2.udp.bytesLeft;
 			auto &dist = m_bytesLeftDist[ifIndex][qIndex];
 			auto it = dist.find(bytesLeft);
 			if (it != dist.end()) {
@@ -449,6 +505,37 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 			}
 			if (m_totalUdpPkts[ifIndex][qIndex] > 0) m_totalUdpPkts[ifIndex][qIndex]--;
 		}
+	}
+
+	/* Themis */
+	if (m_themisEnable && m_ecnEnabled) {
+  		CustomHeader ch2(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+ 	 	p->PeekHeader(ch2);
+
+  		if (ch2.l3Prot == 0x11 && ch2.GetIpv4EcnBits()) {
+    		/* Clear ECN bits before sending CNP */
+      		PppHeader ppp;
+			Ipv4Header ip;
+			p->RemoveHeader(ppp);
+			p->RemoveHeader(ip);
+			ip.SetEcn((Ipv4Header::EcnType)0x00);
+			p->AddHeader(ip);
+			p->AddHeader(ppp);
+
+    		FlowIdTag t;
+    		p->PeekPacketTag(t);
+    		uint32_t inDev = t.GetFlowId();
+    		Ptr<QbbNetDevice> devIn = DynamicCast<QbbNetDevice>(m_devices[inDev]);
+
+    		CnpKey k(ch2.sip, ch2.dip, ch2.udp.pg, ch2.udp.sport, ch2.udp.dport);
+    		auto it = m_ecn_detector.find(k);
+
+    		Time now = Simulator::Now();
+    		if (it == m_ecn_detector.end() || (now - it->second) >= m_cnpSendRateLimit) {
+      			devIn->SendCnp(p, ch2);
+      			m_ecn_detector[k] = now;
+    		}
+  		}
 	}
 
 	if (1){
@@ -698,6 +785,53 @@ bool SwitchNode::PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex) {
 	// current use of egress queue
 	uint64_t currentUsed = m_mmu->egress_bytes[dev][qIndex];
 	return currentUsed > threshold;
+}
+
+/* Themis */
+int SwitchNode::ReceiveCnp(Ptr<Packet>p, CustomHeader &ch) {
+	bool isCnp = false;
+	if (ch.l3Prot == 0xFF) { 
+		/* Standalone CNP */ 
+		isCnp = true;
+	} else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD) {
+  		/* ACK/NACK that may carry CNP flag */
+  		uint8_t c = (ch.ack.flags >> qbbHeader::FLAG_CNP) & 1;
+  		isCnp = (c != 0);
+	}
+	if (!isCnp) return 0;
+
+	CnpKey key(ch.dip, ch.sip, ch.udp.pg, ch.udp.dport, ch.udp.sport);
+	auto it = m_cnp_handler.find(key);
+	if (it == m_cnp_handler.end()) {
+		CnpHandler h;
+		h.cnp_num = 1;
+		h.set_last_loop = Simulator::Now();
+		h.rec_time = Simulator::Now();
+		m_cnp_handler.emplace(key, h);
+		return 1;
+	}
+
+	CnpHandler &h = it->second;
+	h.recovered = 0;
+	if (Simulator::Now() - h.rec_time >= m_cnpMinGap) {
+		h.rec_time = Simulator::Now();
+		h.cnp_num += 1;
+
+		if (h.cnp_num == 1) {
+			h.loop_num++;
+			h.alpha++;
+			h.biggest++;
+		}
+
+		if (h.cnp_num >= h.alpha) {
+			h.cnp_num -= h.alpha;
+			h.alpha++;
+			h.biggest++;
+			h.loop_num++;
+		}
+	}
+
+	return 1;
 }
 
 // for monitor
