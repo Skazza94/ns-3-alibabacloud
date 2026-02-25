@@ -108,6 +108,7 @@ public:
 		  // SeqTsHeader
 		  uint16_t pg;
 		  uint64_t seq;
+		  uint64_t bytesLeft;
       // IntHeader
 		  IntHeader ih;
       // SpongeHeader

@@ -1072,6 +1072,9 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 			payload_size = m_mtu;
 	}
 
+	uint64_t sent_end = seq_to_send + payload_size;
+	uint64_t bytes_left_after = (sent_end >= qp->m_size) ? 0 : (qp->m_size - sent_end);
+
 	// std::cout 	
 	// 	<< Simulator::Now().GetTimeStep() << " " 
 	// 	<< "[SENDER] "
@@ -1079,13 +1082,15 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 	// 	<< "[" << Ipv4Address(qp->sip) << "(" << qp->sport 
 	// 	<< ") --> "  << Ipv4Address(qp->dip) << "(" << qp->dport << ")] (tag " << qp->m_tag << ")"
 	// 	<< "[Seq " << seq_to_send << "] "
-	// 	<< "[Size " << payload_size << "] " << std::endl;
+	// 	<< "[Size " << payload_size << "] " 
+	//  	<< "[BytesLeft " << bytes_left_after << "] " << std::endl;
 
 	Ptr<Packet> p = Create<Packet> ((uint32_t)payload_size);
 	// add SimpleSeqTsHeader
 	SimpleSeqTsHeader seqTs;
 	seqTs.SetSeq (seq_to_send);
 	seqTs.SetPG (qp->m_pg);
+	seqTs.SetBytesLeft (bytes_left_after);
 	p->AddHeader (seqTs);
 	// add udp header
 	UdpHeader udpHeader;

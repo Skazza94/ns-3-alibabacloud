@@ -3,12 +3,14 @@
 
 #include <unordered_map>
 #include <ns3/node.h>
+#include <ns3/random-variable.h>
 #include "qbb-net-device.h"
 #include "switch-mmu.h"
 #include "pint.h"
 
 /* =============
 Improved SwitchNode class to support Nvidia-like per-packet ECMP Adaptive Routing and Fast NACKs (DCP-like) by Mariano Scazzariello.
+Sponge Deflection implementation by Mariano Scazzariello, PD-Quantile was implemented by Alexandra Udrescu.
 ================ */
 
 namespace ns3 {
@@ -31,6 +33,10 @@ class SwitchNode : public Node{
 	uint64_t m_lastPktTs[pCnt]; // ns
 	double m_u[pCnt];
 
+	/* PD-Quantile: per-egress histogram of remaining bytes for UDP packets */
+	std::map<uint64_t, uint32_t> m_bytesLeftDist[pCnt][qCnt];
+	uint32_t m_totalUdpPkts[pCnt][qCnt];
+
 protected:
 	bool m_ecnEnabled;
 	uint32_t m_ccMode;
@@ -50,6 +56,14 @@ protected:
 	bool m_spongeEnable;
 	std::vector<Ipv4Address> m_spongeIps;
 
+	/* PD-Quantile knobs */
+	bool m_pdQuantileDeflectionEnable;
+	double m_pdQuantileAlphaThreshold;
+	bool m_pdDeflectionCandidatesInit = false;
+	std::vector<int> m_pdDeflectionCandidates;
+	UniformVariable m_randomVariable;
+	TracedCallback<uint8_t, uint32_t, Ptr<const Packet>, int, int, uint32_t> m_pdDeflectCb;
+
 private:
     int GetOutDev(Ptr<const Packet>, CustomHeader &ch);
 	/* Per-Flow ECMP */
@@ -59,16 +73,18 @@ private:
 	/* Helper to get Port Bytes */
     uint64_t GetPortQlenBytes(uint32_t outDev) const;
 
-	/* Fast NACK generation */
-	Ptr<Packet> GenFastNack(CustomHeader &ch);
-
-	/* Sponge Packet generation */
-	Ptr<Packet> DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch);
-
 	void SendToDev(Ptr<Packet>p, CustomHeader &ch);
 	static uint32_t EcmpHash(const uint8_t* key, size_t len, uint32_t seed);
 	void CheckAndSendPfc(uint32_t inDev, uint32_t qIndex);
 	void CheckAndSendResume(uint32_t inDev, uint32_t qIndex);
+
+	/* Fast NACK generation */
+	Ptr<Packet> GenFastNack(CustomHeader &ch);
+	/* Sponge Packet generation */
+	Ptr<Packet> DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch);
+	/* PD-Quantile */
+	double PDComputeQuantile(Ptr<Packet> p, uint32_t dev, uint32_t qIndex);
+	bool PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex);
 public:
 	Ptr<SwitchMmu> m_mmu;
 

@@ -63,7 +63,7 @@ namespace ns3
                                 .AddTraceSource("SpongeTx",
                                                 "Packet transmitted by sponge.",
                                                 MakeTraceSourceAccessor(&SpongeNode::m_spongeTx),
-                                                "ns3TracedCallback");
+                                                "ns3::TracedCallback");
         return tid;
     }
 

@@ -55,6 +55,9 @@ public:
   void SetPG (uint16_t pg);
   uint16_t GetPG () const;
 
+  void SetBytesLeft (uint64_t bytesLeft);
+  uint64_t GetBytesLeft () const;
+
   static TypeId GetTypeId (void);
   virtual TypeId GetInstanceTypeId (void) const;
   virtual void Print (std::ostream &os) const;
@@ -66,6 +69,7 @@ private:
 
   uint64_t m_seq;
   uint16_t m_pg;
+  uint64_t m_bytesLeft;
 public:
   IntHeader ih;
   SpongeHeader sh;

@@ -69,6 +69,20 @@ TypeId SwitchNode::GetTypeId (void)
 			BooleanValue(false),
 			MakeBooleanAccessor(&SwitchNode::m_spongeEnable),
 			MakeBooleanChecker())
+	.AddAttribute("PdQuantileDeflectionEnabled",
+			"Enable PD-Quantile deflection instead of dropping a packet.",
+			BooleanValue(false),
+			MakeBooleanAccessor(&SwitchNode::m_pdQuantileDeflectionEnable),
+			MakeBooleanChecker())
+	.AddAttribute("PdQuantileAlphaThreshold",
+			"Alpha scaling factor for quantile thresholding.",
+			DoubleValue(1.0),
+			MakeDoubleAccessor(&SwitchNode::m_pdQuantileAlphaThreshold),
+			MakeDoubleChecker<double>())
+	.AddTraceSource("PdQuantileDeflected",
+			"Packet deflected by PD-Quantile deflection.",
+			MakeTraceSourceAccessor(&SwitchNode::m_pdDeflectCb),
+			"ns3::TracedCallback")
   ;
   return tid;
 }
@@ -87,6 +101,12 @@ SwitchNode::SwitchNode(){
 		m_lastPktSize[i] = m_lastPktTs[i] = 0;
 	for (uint32_t i = 0; i < pCnt; i++)
 		m_u[i] = 0;
+
+	/* PD-Quantile */
+	for (uint32_t e = 0; e < pCnt; e++)
+		for (uint32_t q = 0; q < qCnt; q++)
+			m_totalUdpPkts[e][q] = 0;
+	m_randomVariable = UniformVariable(0, 1);
 }
 
 uint64_t SwitchNode::GetPortQlenBytes(uint32_t outDev) const {
@@ -199,111 +219,6 @@ int SwitchNode::GetOutDevPktEcmp(Ptr<const Packet> p, CustomHeader &ch) {
     }
 }
 
-Ptr<Packet> SwitchNode::GenFastNack(CustomHeader &ch) {
-	qbbHeader seqh;
-	seqh.SetSeq(ch.udp.seq);
-	seqh.SetPG(ch.udp.pg);
-	seqh.SetSport(ch.udp.dport);
-	seqh.SetDport(ch.udp.sport);
-	seqh.SetIntHeader(ch.udp.ih);
-	seqh.SetCnp();	/* Always piggyback a CNP since we want to reduce the rate! */
-
-	Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
-	newp->AddHeader(seqh);
-
-	Ipv4Header ipv4;
-	ipv4.SetDestination(Ipv4Address(ch.sip));
-	ipv4.SetSource(Ipv4Address(ch.dip));
-	ipv4.SetProtocol(0xFD); // nack=0xFD
-	ipv4.SetTtl(64);
-	ipv4.SetPayloadSize(newp->GetSize());
-	ipv4.SetIdentification(ch.ipid);
-	newp->AddHeader(ipv4);
-
-	PppHeader ppp;
-	ppp.SetProtocol(0x0021);
-	newp->AddHeader(ppp);
-
-    return newp;
-}
-
-Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
-	/* Perform ECMP and pick a sponge, very naive selection */
-	union {
-		uint8_t u8[4+4+2+2];
-		uint32_t u32[3];
-	} buf;
-	buf.u32[0] = ch.sip;
-	buf.u32[1] = ch.dip;
-	buf.u32[2] = ch.udp.sport | ((uint32_t)ch.udp.dport << 16);
-	uint32_t idx = EcmpHash(buf.u8, 12, m_ecmpSeed) % m_spongeIps.size();
-
-	uint32_t payload_size = ori_pkt->GetSize() - ch.GetSerializedSize();
-	Ptr<Packet> newp = Create<Packet>(payload_size);
-
-	SpongeHeader sh;
-	sh.m_enabled = 1;
-	sh.m_osip = ch.sip;
-	sh.m_odip = ch.dip;
-	sh.m_osport = ch.udp.sport;
-	sh.m_odport = ch.udp.dport;
-	sh.m_opg = ch.udp.pg;
-
-	SimpleSeqTsHeader seqTs;
-	seqTs.SetSeq(ch.udp.seq);
-	seqTs.SetPG(4); // Force to lossy, we store the original PG in the SpongeHeader
-	seqTs.ih = ch.udp.ih;
-	seqTs.sh = sh;
-	newp->AddHeader(seqTs);
-
-	UdpHeader udpHeader;
-	udpHeader.SetDestinationPort(0xD3F1);
-	udpHeader.SetSourcePort((1024 + GetId()) % (1<<16));
-	newp->AddHeader(udpHeader);
-
-	Ipv4Header ipv4;
-	ipv4.SetDestination(m_spongeIps[idx]);
-	ipv4.SetSource(Ipv4Address(0xc8ffff01));
-	ipv4.SetProtocol(0x11);
-	ipv4.SetTtl(64);
-	ipv4.SetPayloadSize(newp->GetSize());
-	ipv4.SetIdentification(ch.ipid);
-	newp->AddHeader(ipv4);
-
-	PppHeader ppp;
-	ppp.SetProtocol(0x0021);
-	newp->AddHeader(ppp);
-
-	/* Copy tags */
-	ByteTagIterator it = ori_pkt->GetByteTagIterator();
-	while (it.HasNext())
-	{
-		ByteTagIterator::Item tag_item = it.Next();
-		Callback<ObjectBase*> constructor = tag_item.GetTypeId().GetConstructor();
-
-		Tag* tag = dynamic_cast<Tag*>(constructor());
-		NS_ASSERT(tag != nullptr);
-		tag_item.GetTag(*tag);
-
-		newp->AddByteTag(*tag);
-	}
-
-	PacketTagIterator pit = ori_pkt->GetPacketTagIterator();
-	while (pit.HasNext())
-	{
-		PacketTagIterator::Item tag_item = pit.Next();
-		Callback<ObjectBase*> constructor = tag_item.GetTypeId().GetConstructor();
-
-		Tag* tag = dynamic_cast<Tag*>(constructor());
-		NS_ASSERT(tag != nullptr);
-		tag_item.GetTag(*tag);
-
-		newp->AddPacketTag(*tag);
-	}
-
-    return newp;
-}
-
 void SwitchNode::CheckAndSendPfc(uint32_t inDev, uint32_t qIndex){
 	Ptr<QbbNetDevice> device = DynamicCast<QbbNetDevice>(m_devices[inDev]);
 	if (m_mmu->CheckShouldPause(inDev, qIndex)){
@@ -340,6 +255,48 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 			qIndex = (ch.l3Prot == 0x06 ? 1 : ch.udp.pg); // if TCP, put to queue 1
 		}
 		// std::cout << "qIndex is: " << qIndex << std::endl;
+
+		if (m_pdQuantileDeflectionEnable && ch.l3Prot == 0x11) {
+			if (PDShouldDeflect(p, (uint32_t)idx, qIndex)) {
+				if (!m_pdDeflectionCandidatesInit) {
+					/* Build candidate list of other switch-connected ports once */
+					for (uint32_t port = 0; port < m_devices.size(); ++port) {
+						if ((int)port == idx) continue;
+						Ptr<NetDevice> dev = m_devices[port];
+						Ptr<Channel> chn = dev->GetChannel();
+						if (!chn || chn->GetNDevices() != 2) continue;
+						Ptr<NetDevice> peer = (chn->GetDevice(0) == dev) ? chn->GetDevice(1) : chn->GetDevice(0);
+						if (!peer || !peer->GetNode()) continue;
+						if (peer->GetNode()->GetNodeType() == 1) {
+							m_pdDeflectionCandidates.push_back((int)port);
+						}
+					}
+
+					m_pdDeflectionCandidatesInit = true;
+				}
+				
+				bool redirected = false;
+				if (!m_pdDeflectionCandidates.empty()) {
+					uint32_t start = (uint32_t)(m_randomVariable.GetValue() * m_pdDeflectionCandidates.size());
+					for (uint32_t k = 0; k < m_pdDeflectionCandidates.size(); ++k) {
+						int alt = m_pdDeflectionCandidates[(start + k) % m_pdDeflectionCandidates.size()];
+						Ptr<NetDevice> dev = m_devices[alt];
+						if (!PDShouldDeflect(p, (uint32_t)alt, qIndex) && dev->IsLinkUp()) {
+							m_pdDeflectCb(0, GetId(), p, idx, alt, qIndex);
+							
+							idx = alt;
+							redirected = true;
+							break;
+						}
+					}
+				}
+				if (!redirected) {
+					m_pdDeflectCb(1, GetId(), p, idx, -1, qIndex);
+
+					return; /* Drop if no other port is available */
+				}
+			}
+		}
 
 		// admission control
 		FlowIdTag t;
@@ -379,6 +336,14 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 			CheckAndSendPfc(inDev, qIndex);
 			m_bytes[inDev][idx][qIndex] += p->GetSize();
 		}
+
+		/* PD-Quantile: maintain histogram on enqueue to egress idx/qIndex */
+		if (m_pdQuantileDeflectionEnable && ch.l3Prot == 0x11) {
+			uint64_t bytesLeft = ch.udp.bytesLeft;
+			m_bytesLeftDist[idx][qIndex][bytesLeft]++;
+			m_totalUdpPkts[idx][qIndex]++;
+		}
+
 		m_devices[idx]->SwitchSend(qIndex, p, ch);
 	}else
 	{
@@ -469,6 +434,23 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 		//CheckAndSendPfc(inDev, qIndex);
 		CheckAndSendResume(inDev, qIndex);
 	}
+
+	/* PD-Quantile: maintain histogram on dequeue from egress ifIndex/qIndex */
+	if (m_pdQuantileDeflectionEnable) {
+		CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+		p->PeekHeader(ch);
+		if (ch.l3Prot == 0x11) {
+			uint64_t bytesLeft = ch.udp.bytesLeft;
+			auto &dist = m_bytesLeftDist[ifIndex][qIndex];
+			auto it = dist.find(bytesLeft);
+			if (it != dist.end()) {
+				if (it->second > 0) it->second--;
+				if (it->second == 0) dist.erase(it);
+			}
+			if (m_totalUdpPkts[ifIndex][qIndex] > 0) m_totalUdpPkts[ifIndex][qIndex]--;
+		}
+	}
+
 	if (1){
 		uint8_t* buf = p->GetBuffer();
 		if (buf[PppHeader::GetStaticSize() + 9] == 0x11){ // udp packet
@@ -577,6 +559,145 @@ int SwitchNode::log2apprx(int x, int b, int m, int l){
 		#endif
 	}
 	return int(log2(x) * (1<<logres_shift(b, l)));
+}
+
+/* Fast NACK generation */
+Ptr<Packet> SwitchNode::GenFastNack(CustomHeader &ch) {
+	qbbHeader seqh;
+	seqh.SetSeq(ch.udp.seq);
+	seqh.SetPG(ch.udp.pg);
+	seqh.SetSport(ch.udp.dport);
+	seqh.SetDport(ch.udp.sport);
+	seqh.SetIntHeader(ch.udp.ih);
+	seqh.SetCnp();	/* Always piggyback a CNP since we want to reduce the rate! */
+
+	Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
+	newp->AddHeader(seqh);
+
+	Ipv4Header ipv4;
+	ipv4.SetDestination(Ipv4Address(ch.sip));
+	ipv4.SetSource(Ipv4Address(ch.dip));
+	ipv4.SetProtocol(0xFD); // nack=0xFD
+	ipv4.SetTtl(64);
+	ipv4.SetPayloadSize(newp->GetSize());
+	ipv4.SetIdentification(ch.ipid);
+	newp->AddHeader(ipv4);
+
+	PppHeader ppp;
+	ppp.SetProtocol(0x0021);
+	newp->AddHeader(ppp);
+
+    return newp;
+}
+
+/* Sponge */
+Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
+	/* Perform ECMP and pick a sponge, very naive selection */
+	union {
+		uint8_t u8[4+4+2+2];
+		uint32_t u32[3];
+	} buf;
+	buf.u32[0] = ch.sip;
+	buf.u32[1] = ch.dip;
+	buf.u32[2] = ch.udp.sport | ((uint32_t)ch.udp.dport << 16);
+	uint32_t idx = EcmpHash(buf.u8, 12, m_ecmpSeed) % m_spongeIps.size();
+
+	uint32_t payload_size = ori_pkt->GetSize() - ch.GetSerializedSize();
+	Ptr<Packet> newp = Create<Packet>(payload_size);
+
+	SpongeHeader sh;
+	sh.m_enabled = 1;
+	sh.m_osip = ch.sip;
+	sh.m_odip = ch.dip;
+	sh.m_osport = ch.udp.sport;
+	sh.m_odport = ch.udp.dport;
+	sh.m_opg = ch.udp.pg;
+
+	SimpleSeqTsHeader seqTs;
+	seqTs.SetSeq(ch.udp.seq);
+	seqTs.SetPG(4); // Force to lossy, we store the original PG in the SpongeHeader
+	seqTs.SetBytesLeft(ch.udp.bytesLeft);
+	seqTs.ih = ch.udp.ih;
+	seqTs.sh = sh;
+	newp->AddHeader(seqTs);
+
+	UdpHeader udpHeader;
+	udpHeader.SetDestinationPort(0xD3F1);
+	udpHeader.SetSourcePort((1024 + GetId()) % (1<<16));
+	newp->AddHeader(udpHeader);
+
+	Ipv4Header ipv4;
+	ipv4.SetDestination(m_spongeIps[idx]);
+	ipv4.SetSource(Ipv4Address(0xc8ffff01));
+	ipv4.SetProtocol(0x11);
+	ipv4.SetTtl(64);
+	ipv4.SetPayloadSize(newp->GetSize());
+	ipv4.SetIdentification(ch.ipid);
+	newp->AddHeader(ipv4);
+
+	PppHeader ppp;
+	ppp.SetProtocol(0x0021);
+	newp->AddHeader(ppp);
+
+	/* Copy tags */
+	ByteTagIterator it = ori_pkt->GetByteTagIterator();
+	while (it.HasNext())
+	{
+		ByteTagIterator::Item tag_item = it.Next();
+		Callback<ObjectBase*> constructor = tag_item.GetTypeId().GetConstructor();
+
+		Tag* tag = dynamic_cast<Tag*>(constructor());
+		NS_ASSERT(tag != nullptr);
+		tag_item.GetTag(*tag);
+
+		newp->AddByteTag(*tag);
+	}
+
+	PacketTagIterator pit = ori_pkt->GetPacketTagIterator();
+	while (pit.HasNext())
+	{
+		PacketTagIterator::Item tag_item = pit.Next();
+		Callback<ObjectBase*> constructor = tag_item.GetTypeId().GetConstructor();
+
+		Tag* tag = dynamic_cast<Tag*>(constructor());
+		NS_ASSERT(tag != nullptr);
+		tag_item.GetTag(*tag);
+
+		newp->AddPacketTag(*tag);
+	}
+
+    return newp;
+}
+
+/* PD-Quantile */
+double SwitchNode::PDComputeQuantile(Ptr<Packet> p, uint32_t dev, uint32_t qIndex) {
+	CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
+	p->PeekHeader(ch);
+	uint64_t target = ch.udp.bytesLeft;
+	uint32_t total = m_totalUdpPkts[dev][qIndex];
+	if (total == 0) return 0.0;
+	uint32_t count = 0;
+	for (auto const &kv : m_bytesLeftDist[dev][qIndex]){
+		if (kv.first < target) break;
+		count += kv.second;
+	}
+	return (double)count / (double)total;
+}
+
+bool SwitchNode::PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex) {
+	double quant = PDComputeQuantile(p, dev, qIndex);
+	// clamp quant to [0,1]
+	if (quant < 0.0) quant = 0.0;
+	if (quant > 1.0) quant = 1.0;
+	// f = clamp(1 - alpha * quant, 0, 1)
+	double f = 1.0 - m_pdQuantileAlphaThreshold * quant;
+	if (f < 0.0) f = 0.0;
+	if (f > 1.0) f = 1.0;
+	uint64_t queueCapacity = m_mmu->bufferPool / m_devices.size();
+	uint64_t threshold = (uint64_t)(f * (double)queueCapacity);
+	// current use of egress queue
+	uint64_t currentUsed = m_mmu->egress_bytes[dev][qIndex];
+	return currentUsed > threshold;
 }
 
 // for monitor
