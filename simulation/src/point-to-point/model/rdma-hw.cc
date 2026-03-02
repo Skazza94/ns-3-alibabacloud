@@ -1164,7 +1164,7 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 	// 	<< ") --> "  << Ipv4Address(qp->dip) << "(" << qp->dport << ")] (tag " << qp->m_tag << ")"
 	// 	<< "[Seq " << seq_to_send << "] "
 	// 	<< "[Size " << payload_size << "] " 
-	//  	<< "[BytesLeft " << bytes_left_after << "] " << std::endl;
+	// 	<< "[BytesLeft " << bytes_left_after << "] " << std::endl;
 
 	Ptr<Packet> p = Create<Packet> ((uint32_t)payload_size);
 	// add SimpleSeqTsHeader
@@ -1293,7 +1293,7 @@ void RdmaHw::PrintQPRate(FILE* rate_output){
 		if(qp->m_rate.GetBitRate() == last_qp_rate[key]){
 			continue;
 		}
-		fprintf(rate_output, "%lu, %u, %u, %u, %u, %u, %u\n", Simulator::Now().GetTimeStep(), qp->m_src, qp->m_dest, qp->sport, qp->dport, qp->m_size, qp->m_rate.GetBitRate());
+		fprintf(rate_output, "%lu, %u, %u, %u, %u, %u, %lu\n", Simulator::Now().GetTimeStep(), qp->m_src, qp->m_dest, qp->sport, qp->dport, qp->m_size, qp->m_rate.GetBitRate());
 		fflush(rate_output);
 		last_qp_rate[key] = qp->m_rate.GetBitRate();
 	}
@@ -1927,7 +1927,7 @@ void RdmaHw::RestartSenderTimer(Ptr<RdmaQueuePair> qp) {
 		const double skewFrac = 0.2;
 		double u = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
 		double factor = 1.0 + skewFrac * u;
-		Time skewedDelta = MicroSeconds(delta.GetNanoSeconds() * factor);
+		Time skewedDelta = NanoSeconds(delta.GetNanoSeconds() * factor);
     	qp->m_senderTimer = Simulator::Schedule(skewedDelta, &RdmaHw::SenderTimeoutHandler, this, qp);
 	}
 }
