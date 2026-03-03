@@ -41,6 +41,11 @@ namespace ns3 {
 				DoubleValue(1000.0 * 1024 * 1024),
 				MakeDoubleAccessor(&BEgressQueue::m_maxBytes),
 				MakeDoubleChecker<double>())
+			.AddAttribute("DequeuePolicy",
+            	"Dequeue policy: 0=Strict ACKs, 1=Strict ACKs+Lossless",
+              	UintegerValue(0),
+              	MakeUintegerAccessor(&BEgressQueue::m_dequeuePolicy),
+				MakeUintegerChecker<uint32_t>(0, 1))
 			.AddTraceSource ("BeqEnqueue", "Enqueue a packet in the BEgressQueue. Multiple queue",
 					MakeTraceSourceAccessor (&BEgressQueue::m_traceBeqEnqueue),
 					"ns3::BEgressQueue::TracedCallback")
@@ -108,12 +113,26 @@ namespace ns3 {
 			found = true;
 			qIndex = 0;
 		}
+		else if (m_dequeuePolicy == 1 && !paused[3] && m_queues[3]->GetNPackets() > 0) // 3 is lossless priority 
+		{
+			found = true;
+			qIndex = 3;
+		}
 		else
 		{
 			if (!found)
 			{
 				for (qIndex = 1; qIndex <= qCnt; qIndex++)
 				{
+					if ((qIndex + m_rrlast) % qCnt == 0) // highest priority
+					{
+						continue;
+					}
+					if (m_dequeuePolicy == 1 && (qIndex + m_rrlast) % qCnt == 3) // lossless
+					{
+						continue;
+					}
+
 					if (!paused[(qIndex + m_rrlast) % qCnt] && m_queues[(qIndex + m_rrlast) % qCnt]->GetNPackets() > 0)  //round robin
 					{
 						found = true;

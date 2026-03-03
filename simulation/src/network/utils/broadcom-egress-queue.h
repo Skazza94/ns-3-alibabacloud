@@ -79,6 +79,8 @@ namespace ns3 {
 		uint32_t m_rrlast;
 		uint32_t m_qlast;
 		std::vector<Ptr<SimpleDropTailQueue>> m_queues; // uc queues
+
+		uint32_t m_dequeuePolicy; // policy for packet dequeuing
 		
 		TracedCallback<Ptr<const Packet> > m_traceEnqueue;
   		TracedCallback<Ptr<const Packet> > m_traceDequeue;
