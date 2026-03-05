@@ -96,7 +96,7 @@ protected:
 
 	/* Themis Knobs */
 	bool m_themisEnable;
-	Time m_cnpMinGap = NanoSeconds(5);
+	Time m_cnpMinGap = NanoSeconds(50);
 	Time m_cnpRecoverWindow = MicroSeconds(500);
 	Time m_cnpSendRateLimit = MicroSeconds(5);
 	std::map<CnpKey, CnpHandler> m_cnp_handler;

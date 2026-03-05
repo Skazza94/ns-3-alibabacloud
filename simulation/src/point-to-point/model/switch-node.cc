@@ -346,8 +346,10 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 							}
 						}
 
+						if (has) {
+							p->RemovePacketTag(lt);
+						}
 						lt.SetLeft(left);
-						p->RemovePacketTag(lt);
 						p->AddPacketTag(lt);
 					}	
 				}
