@@ -702,6 +702,7 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 			cn_hdr.SetSeq(ch.udp.seq);
 			cn_hdr.SetQindex(ch.udp.pg);
 			cn_hdr.SetFlow(ch.udp.sport);
+			cn_hdr.SetDFlow(ch.udp.dport);
 	
 			Ptr<Packet> cnp = Create<Packet>(std::max(64-14-20-16, 0));
 			cnp->AddHeader(cn_hdr);

@@ -806,44 +806,51 @@ bool SwitchNode::PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex) {
 /* Themis */
 int SwitchNode::ReceiveCnp(Ptr<Packet>p, CustomHeader &ch) {
 	bool isCnp = false;
+	uint16_t pg, dport, sport;
 	if (ch.l3Prot == 0xFF) { 
 		/* Standalone CNP */ 
 		isCnp = true;
+		pg = ch.cnp.qIndex;
+		dport = ch.cnp.dfid;
+		sport = ch.cnp.fid;
 	} else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD) {
   		/* ACK/NACK that may carry CNP flag */
   		uint8_t c = (ch.ack.flags >> qbbHeader::FLAG_CNP) & 1;
   		isCnp = (c != 0);
+		pg = ch.ack.pg;
+		dport = ch.ack.dport;
+		sport = ch.ack.sport;
 	}
 	if (!isCnp) return 0;
 
-	CnpKey key(ch.dip, ch.sip, ch.udp.pg, ch.udp.dport, ch.udp.sport);
+	CnpKey key(ch.dip, ch.sip, pg, dport, sport);
 	auto it = m_cnp_handler.find(key);
+
 	if (it == m_cnp_handler.end()) {
 		CnpHandler h;
-		h.cnp_num = 1;
-		h.set_last_loop = Simulator::Now();
+		h.cnp_num = 0;
+		h.alpha = 5;
+		h.loop_num = 1;
+		h.biggest = 1;
 		h.rec_time = Simulator::Now();
+		h.set_last_loop = Simulator::Now();
 		m_cnp_handler.emplace(key, h);
 		return 1;
 	}
 
 	CnpHandler &h = it->second;
 	h.recovered = 0;
+
 	if (Simulator::Now() - h.rec_time >= m_cnpMinGap) {
 		h.rec_time = Simulator::Now();
 		h.cnp_num += 1;
 
-		if (h.cnp_num == 1) {
-			h.loop_num++;
-			h.alpha++;
-			h.biggest++;
-		}
-
 		if (h.cnp_num >= h.alpha) {
-			h.cnp_num -= h.alpha;
-			h.alpha++;
-			h.biggest++;
-			h.loop_num++;
+			h.cnp_num = 0;
+			h.alpha += 1;
+			h.loop_num = std::min(h.loop_num + 1, 8u);
+			h.biggest = std::max(h.biggest, h.loop_num);
+			h.set_last_loop = Simulator::Now();
 		}
 	}
 

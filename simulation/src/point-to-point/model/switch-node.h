@@ -38,7 +38,7 @@ struct CnpKey {
 
 struct CnpHandler {
 	uint32_t cnp_num = 0;
-	uint32_t alpha = 1;
+	uint32_t alpha = 5;
 	uint32_t loop_num = 0;
 	uint32_t biggest = 0;
 	Time rec_time = Seconds(0);
@@ -96,9 +96,9 @@ protected:
 
 	/* Themis Knobs */
 	bool m_themisEnable;
-	Time m_cnpMinGap = NanoSeconds(50);
+	Time m_cnpMinGap = MicroSeconds(4);
 	Time m_cnpRecoverWindow = MicroSeconds(500);
-	Time m_cnpSendRateLimit = MicroSeconds(5);
+	Time m_cnpSendRateLimit = MicroSeconds(4);
 	std::map<CnpKey, CnpHandler> m_cnp_handler;
 	std::map<CnpKey, Time> m_ecn_detector;
  	int m_recirculationIndex = pCnt;
