@@ -361,7 +361,10 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 		p->PeekPacketTag(t);
 		uint32_t inDev = t.GetFlowId();
 		if (qIndex != 0){ //not highest priority
-			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), type) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), type)){			// Admission control
+			bool ingressAdmitted = m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), type);
+			bool egressAdmitted = m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), type);
+
+			if (ingressAdmitted && egressAdmitted){			// Admission control
 				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize(), type);
 				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize(), type);
 			}else{
@@ -373,7 +376,8 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 					/* Send NACK on highest priority queue */
 					m_devices[inDev]->SwitchSend(0, nack, nack_ch);
 				}
-
+				
+				bool deflected = false;
 				if (m_spongeEnable && ch.l3Prot == 0x11 && ch.udp.sh.m_enabled == 0) {
 					/* Generate the packet for the sponge */
 					p = DoSpongePacket(p, ch);
@@ -386,6 +390,17 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 					/* Repeat below since we are prematurely returning */
 					m_bytes[inDev][idx][qIndex] += p->GetSize();
 					m_devices[idx]->SwitchSend(qIndex, p, ch);
+
+					deflected = true;
+				}
+
+				if (!deflected) {
+					if (!ingressAdmitted) {
+						m_mmu->LogIngressDrop(inDev, qIndex, p->GetSize(), type);
+					} 
+					if (!egressAdmitted) {
+						m_mmu->LogEgressDrop(idx, qIndex, p->GetSize(), type);
+					}
 				}
 
 				/* Drop the original packet */

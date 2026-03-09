@@ -85,12 +85,8 @@ namespace ns3
 
         void SetPortCount(uint32_t pc) { portCount = pc; }
 
-        // Trace functions
-        void TraceLossyIngressDrop(uint32_t port, uint32_t qIndex, uint64_t ingress_bytes, uint64_t threshold, uint32_t psize);
-
-        void TraceLosslessIngressDrop(uint32_t port, uint32_t qIndex, uint64_t hdrmBytes, uint64_t xoff, uint32_t psize);
-
-        void TraceEgressDrop(uint8_t type, uint32_t port, uint32_t qIndex, uint64_t egress_bytes, uint64_t threshold, uint32_t psize);
+        void LogIngressDrop(uint32_t port, uint32_t qIndex, uint32_t psize, uint32_t type);
+        void LogEgressDrop(uint32_t port, uint32_t qIndex, uint32_t psize, uint32_t type);
 
         // config
         uint32_t node_id;
@@ -130,9 +126,13 @@ namespace ns3
         uint64_t xoffUsed[pCnt][qCnt];
 
     private:
+        // Trace functions
+        void TraceLossyIngressDrop(uint32_t port, uint32_t qIndex, uint64_t ingress_bytes, uint64_t threshold, uint32_t psize);
+        void TraceLosslessIngressDrop(uint32_t port, uint32_t qIndex, uint64_t hdrmBytes, uint64_t xoff, uint32_t psize);
+        void TraceEgressDrop(uint8_t type, uint32_t port, uint32_t qIndex, uint64_t egress_bytes, uint64_t threshold, uint32_t psize);
+
         // Drops trace functions
         TracedCallback<uint8_t, uint32_t, uint32_t, uint32_t, uint64_t, uint64_t, uint32_t> m_igDropTrace;
-
         TracedCallback<uint8_t, uint32_t, uint32_t, uint32_t, uint64_t, uint64_t, uint32_t> m_egDropTrace;
     };
 } /* namespace ns3 */
