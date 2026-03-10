@@ -468,7 +468,6 @@ namespace ns3
         if (type == LOSSY)
         {
             sharedPoolUsed += psize;
-            // egressLpf_bytes[port][qIndex] = Reveriegamma * egressLpf_bytes[port][qIndex] + (1-Reveriegamma) * (egress_bytes[port][qIndex]);
         }
     }
 

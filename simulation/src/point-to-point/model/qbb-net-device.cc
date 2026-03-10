@@ -330,7 +330,7 @@ namespace ns3 {
 				}
 			}
 			return;
-		}else if (m_node->GetNodeType() == 1) {   //switch, doesn't care about qcn, just send
+		}else if (m_node->GetNodeType() == 1 || (m_node->GetNodeType() == 2 && nvls_enable == 0)) {   //switch, doesn't care about qcn, just send
 			p = m_queue->DequeueRR(m_paused);		//this is round-robin
 			if (p != 0){
 				m_snifferTrace(p);
@@ -517,11 +517,11 @@ namespace ns3 {
 			uint32_t sid = (sip >> 8) & 0xffff;
 			uint32_t dip = ch.dip;
 			uint32_t did = (dip >> 8) & 0xffff;
-			if ((m_node->GetNodeType() == 1 || m_node->GetNodeType() == 2) && ch.m_tos != 4 && did != m_node->GetId()){ // switch
+			if (m_node->GetNodeType() == 1 || (m_node->GetNodeType() == 2 && (did != m_node->GetId() || ch.m_tos != 4))){ // switch
 				// std::cout << "id: " << m_node->GetId() << " switch receive from " << sid << std::endl;
 				packet->AddPacketTag(FlowIdTag(m_ifIndex));
 				m_node->SwitchReceiveFromDevice(this, packet, ch);
-			}else { // NIC
+			} else { // NIC
 				// send to RdmaHw
 				// std::cout << "id: " << m_node->GetId() << " NIC receive from " << sid << std::endl;
 				if (ch.l3Prot == 0xFC) {
