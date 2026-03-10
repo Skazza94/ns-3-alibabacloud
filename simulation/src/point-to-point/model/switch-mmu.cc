@@ -328,7 +328,6 @@ namespace ns3
                 // or if the switch buffer is full
                 || (psize + totalUsed > bufferPool))
             {
-                TraceLossyIngressDrop(port, qIndex, ingress_bytes[port][qIndex], DynamicThreshold(port, qIndex, "ingress", type), psize);
                 return false;
             }
             else
@@ -349,7 +348,6 @@ namespace ns3
                 // if the switch buffer is full
                 || (psize + totalUsed > bufferPool))
             {
-                TraceLosslessIngressDrop(port, qIndex, GetHdrmBytes(port, qIndex), xoff[port][qIndex], psize);
                 return false;
             }
             else
@@ -365,7 +363,6 @@ namespace ns3
 
     bool SwitchMmu::CheckEgressAdmission(uint32_t port, uint32_t qIndex, uint32_t psize, uint32_t type)
     {
-
         switch (type)
         {
         case LOSSY:
@@ -379,7 +376,6 @@ namespace ns3
                 // or if the switch buffer is full
                 || (psize + totalUsed > bufferPool))
             {
-                TraceEgressDrop(type, port, qIndex, egress_bytes[port][qIndex], DynamicThreshold(port, qIndex, "egress", type), psize);
                 return false;
             }
             else
@@ -398,7 +394,6 @@ namespace ns3
                 // or if the switch buffer is full
                 || (psize + totalUsed > bufferPool))
             {
-                TraceEgressDrop(type, port, qIndex, egress_bytes[port][qIndex], DynamicThreshold(port, qIndex, "egress", type), psize);
                 return false;
             }
             else
@@ -599,6 +594,23 @@ namespace ns3
         kmin[port] = _kmin * 1000;
         kmax[port] = _kmax * 1000;
         pmax[port] = _pmax;
+    }
+
+    void SwitchMmu::LogIngressDrop(uint32_t port, uint32_t qIndex, uint32_t psize, uint32_t type) 
+    {
+        if (type == LOSSY) 
+        {
+            TraceLossyIngressDrop(port, qIndex, ingress_bytes[port][qIndex], DynamicThreshold(port, qIndex, "ingress", type), psize);
+        } 
+        else if (type == LOSSLESS) 
+        {
+            TraceLosslessIngressDrop(port, qIndex, GetHdrmBytes(port, qIndex), xoff[port][qIndex], psize);
+        }
+    }
+
+    void SwitchMmu::LogEgressDrop(uint32_t port, uint32_t qIndex, uint32_t psize, uint32_t type) 
+    {
+        TraceEgressDrop(type, port, qIndex, egress_bytes[port][qIndex], DynamicThreshold(port, qIndex, "egress", type), psize);
     }
 
     void SwitchMmu::TraceLossyIngressDrop(uint32_t port, uint32_t qIndex, uint64_t ingress_bytes, uint64_t threshold, uint32_t psize)

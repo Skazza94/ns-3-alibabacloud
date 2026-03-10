@@ -49,6 +49,7 @@ public:
    * \param fid The flow id
    */
   void SetFlow (const uint16_t fid);
+  void SetDFlow (const uint16_t dfid);
   /**
    * \param q The quantized feedback value
    */
@@ -60,6 +61,7 @@ public:
    * \return The flow id
    */
   uint16_t GetFlow () const;
+  uint16_t GetDFlow () const;
   /**
    * \return The quantized feedback value
    */
@@ -84,8 +86,8 @@ public:
   virtual uint32_t Deserialize (Buffer::Iterator start);
 
 private:
-  uint16_t sport, dport;
   uint16_t m_fid;
+  uint16_t m_dfid;
   uint8_t m_qIndex;
   uint8_t m_ecnBits;
   union {

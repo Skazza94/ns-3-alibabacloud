@@ -57,6 +57,11 @@ void CnHeader::SetFlow (const uint16_t fid)
   m_fid = fid;
 }
 
+void CnHeader::SetDFlow (const uint16_t dfid)
+{
+  m_dfid = dfid;
+}
+
 void CnHeader::SetQindex (const uint8_t qIndex)
 {
 	m_qIndex = qIndex;
@@ -77,10 +82,14 @@ void CnHeader::SetECNBits (const uint8_t ecnbits)
 	m_ecnBits = ecnbits;
 }
 
-
 uint16_t CnHeader::GetFlow () const
 {
   return m_fid;
+}
+
+uint16_t CnHeader::GetDFlow () const
+{
+  return m_dfid;
 }
 
 uint8_t CnHeader::GetQindex () const
@@ -131,7 +140,7 @@ void CnHeader::Print (std::ostream &os) const
 }
 uint32_t CnHeader::GetSerializedSize (void)  const
 {
-  return 8;
+  return 10;
 }
 void CnHeader::Serialize (Buffer::Iterator start)  const
 {
@@ -143,6 +152,7 @@ void CnHeader::Serialize (Buffer::Iterator start)  const
   //start.WriteU64 (lobyte);
   start.WriteU8(m_qIndex);
   start.WriteU16(m_fid);
+  start.WriteU16(m_dfid);
   start.WriteU8(m_ecnBits);
   start.WriteU16(m_qfb);
   start.WriteU16(m_total);
@@ -163,6 +173,7 @@ uint32_t CnHeader::Deserialize (Buffer::Iterator start)
 
   m_qIndex = start.ReadU8();
   m_fid = start.ReadU16();
+  m_dfid = start.ReadU16();
   m_ecnBits = start.ReadU8();
   m_qfb = start.ReadU16();
   m_total = start.ReadU16();

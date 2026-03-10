@@ -310,10 +310,11 @@ CustomHeader::Deserialize (Buffer::Iterator start)
 	  }else if (l3Prot == 0xFF){
 		  cnp.qIndex = i.ReadU8();
 		  cnp.fid = i.ReadU16();
+		  cnp.dfid = i.ReadU16();
 		  cnp.ecnBits = i.ReadU8();
 		  cnp.qfb = i.ReadU16();
 		  cnp.total = i.ReadU16();
-		  l4Size = 8;
+		  l4Size = 10;
 	  }else if (l3Prot == 0xFC || l3Prot == 0xFD){ // ACK or NACK
 		  ack.sport = i.ReadU16();
 		  ack.dport = i.ReadU16();

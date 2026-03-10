@@ -361,7 +361,10 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 		p->PeekPacketTag(t);
 		uint32_t inDev = t.GetFlowId();
 		if (qIndex != 0){ //not highest priority
-			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), type) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), type)){			// Admission control
+			bool ingressAdmitted = m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), type);
+			bool egressAdmitted = m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), type);
+
+			if (ingressAdmitted && egressAdmitted){			// Admission control
 				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize(), type);
 				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize(), type);
 			}else{
@@ -373,7 +376,8 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 					/* Send NACK on highest priority queue */
 					m_devices[inDev]->SwitchSend(0, nack, nack_ch);
 				}
-
+				
+				bool deflected = false;
 				if (m_spongeEnable && ch.l3Prot == 0x11 && ch.udp.sh.m_enabled == 0) {
 					/* Generate the packet for the sponge */
 					p = DoSpongePacket(p, ch);
@@ -386,6 +390,17 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 					/* Repeat below since we are prematurely returning */
 					m_bytes[inDev][idx][qIndex] += p->GetSize();
 					m_devices[idx]->SwitchSend(qIndex, p, ch);
+
+					deflected = true;
+				}
+
+				if (!deflected) {
+					if (!ingressAdmitted) {
+						m_mmu->LogIngressDrop(inDev, qIndex, p->GetSize(), type);
+					} 
+					if (!egressAdmitted) {
+						m_mmu->LogEgressDrop(idx, qIndex, p->GetSize(), type);
+					}
 				}
 
 				/* Drop the original packet */
@@ -806,44 +821,51 @@ bool SwitchNode::PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex) {
 /* Themis */
 int SwitchNode::ReceiveCnp(Ptr<Packet>p, CustomHeader &ch) {
 	bool isCnp = false;
+	uint16_t pg, dport, sport;
 	if (ch.l3Prot == 0xFF) { 
 		/* Standalone CNP */ 
 		isCnp = true;
+		pg = ch.cnp.qIndex;
+		dport = ch.cnp.dfid;
+		sport = ch.cnp.fid;
 	} else if (ch.l3Prot == 0xFC || ch.l3Prot == 0xFD) {
   		/* ACK/NACK that may carry CNP flag */
   		uint8_t c = (ch.ack.flags >> qbbHeader::FLAG_CNP) & 1;
   		isCnp = (c != 0);
+		pg = ch.ack.pg;
+		dport = ch.ack.dport;
+		sport = ch.ack.sport;
 	}
 	if (!isCnp) return 0;
 
-	CnpKey key(ch.dip, ch.sip, ch.udp.pg, ch.udp.dport, ch.udp.sport);
+	CnpKey key(ch.dip, ch.sip, pg, dport, sport);
 	auto it = m_cnp_handler.find(key);
+
 	if (it == m_cnp_handler.end()) {
 		CnpHandler h;
-		h.cnp_num = 1;
-		h.set_last_loop = Simulator::Now();
+		h.cnp_num = 0;
+		h.alpha = 5;
+		h.loop_num = 1;
+		h.biggest = 1;
 		h.rec_time = Simulator::Now();
+		h.set_last_loop = Simulator::Now();
 		m_cnp_handler.emplace(key, h);
 		return 1;
 	}
 
 	CnpHandler &h = it->second;
 	h.recovered = 0;
+
 	if (Simulator::Now() - h.rec_time >= m_cnpMinGap) {
 		h.rec_time = Simulator::Now();
 		h.cnp_num += 1;
 
-		if (h.cnp_num == 1) {
-			h.loop_num++;
-			h.alpha++;
-			h.biggest++;
-		}
-
 		if (h.cnp_num >= h.alpha) {
-			h.cnp_num -= h.alpha;
-			h.alpha++;
-			h.biggest++;
-			h.loop_num++;
+			h.cnp_num = 0;
+			h.alpha += 1;
+			h.loop_num = std::min(h.loop_num + 1, 8u);
+			h.biggest = std::max(h.biggest, h.loop_num);
+			h.set_last_loop = Simulator::Now();
 		}
 	}
 

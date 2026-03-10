@@ -117,6 +117,7 @@ public:
 	  // CnHeader
 	  struct {
 		  uint16_t fid;
+      uint16_t dfid;
 		  uint8_t qIndex;
 		  uint16_t qfb;
 		  uint8_t ecnBits;
