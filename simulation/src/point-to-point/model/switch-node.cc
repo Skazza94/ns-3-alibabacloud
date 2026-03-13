@@ -363,8 +363,9 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 					m_devices[inDev]->SwitchSend(0, nack, nack_ch);
 				}
 				
+				SpongeTag st;
 				bool deflected = false;
-				if (m_spongeEnable && ch.l3Prot == 0x11 && ch.udp.sh.m_enabled == 0) {
+				if (m_spongeEnable && ch.l3Prot == 0x11 && !p->PeekPacketTag(st)) {
 					/* Generate the packet for the sponge */
 					p = DoSpongePacket(p, ch);
 					/* Peek again ch (it changed) */
@@ -708,20 +709,15 @@ Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 	uint32_t payload_size = ori_pkt->GetSize() - ch.GetSerializedSize();
 	Ptr<Packet> newp = Create<Packet>(payload_size);
 
-	SpongeHeader sh;
-	sh.m_enabled = 1;
-	sh.m_osip = ch.sip;
-	sh.m_odip = ch.dip;
-	sh.m_osport = ch.udp.sport;
-	sh.m_odport = ch.udp.dport;
-	sh.m_opg = ch.udp.pg;
+	/* Populate SpongeTag with the original values */
+	SpongeTag st;
+	st.SetFlowInfo(ch.sip, ch.dip, ch.udp.sport, ch.udp.dport, ch.udp.pg);
 
 	SimpleSeqTsHeader seqTs;
 	seqTs.SetSeq(ch.udp.seq);
-	seqTs.SetPG(4); // Force to lossy, we store the original PG in the SpongeHeader
+	seqTs.SetPG(4); // Force to lossy, we store the original PG in the SpongeTag
 	seqTs.SetBytesLeft(ch.udp.bytesLeft);
 	seqTs.ih = ch.udp.ih;
-	seqTs.sh = sh;
 	newp->AddHeader(seqTs);
 
 	UdpHeader udpHeader;
@@ -731,7 +727,7 @@ Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 
 	Ipv4Header ipv4;
 	ipv4.SetDestination(m_spongeIps[idx]);
-	ipv4.SetSource(Ipv4Address(0xc8ffff01));
+	ipv4.SetSource(Ipv4Address(0xc8ffff00 | (GetId() & 0xff)));
 	ipv4.SetProtocol(0x11);
 	ipv4.SetTtl(64);
 	ipv4.SetPayloadSize(newp->GetSize());
@@ -768,6 +764,9 @@ Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 
 		newp->AddPacketTag(*tag);
 	}
+
+	/* Add the SpongeTag to the new packet */
+	newp->AddPacketTag(st);
 
     return newp;
 }

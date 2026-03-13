@@ -6,6 +6,7 @@
 #include "ns3/qbb-net-device.h"
 #include "ns3/packet.h"
 #include "ns3/nstime.h"
+#include "ns3/sponge-tag.h"
 
 enum SpongeMode : uint8_t
 {

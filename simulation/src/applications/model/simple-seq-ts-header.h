@@ -24,7 +24,6 @@
 #include "ns3/header.h"
 #include "ns3/nstime.h"
 #include "ns3/int-header.h"
-#include "ns3/sponge-header.h"
 
 namespace ns3 {
 /**
@@ -72,7 +71,6 @@ private:
   uint64_t m_bytesLeft;
 public:
   IntHeader ih;
-  SpongeHeader sh;
 };
 
 } // namespace ns3

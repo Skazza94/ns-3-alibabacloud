@@ -37,7 +37,6 @@ build_lib(
     model/switch-node.cc
     model/switch-mmu.cc
     model/nvswitch-node.cc
-    model/sponge-header.cc
     model/sponge-node.cc
     model/point-to-point-remote-channel.cc
   HEADER_FILES
@@ -62,7 +61,6 @@ build_lib(
     model/switch-mmu.h
     model/trace-format.h
     model/nvswitch-node.h
-    model/sponge-header.h
     model/sponge-node.h
     model/point-to-point-remote-channel.h
   LIBRARIES_TO_LINK ${libnetwork}

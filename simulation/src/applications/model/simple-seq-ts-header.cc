@@ -106,7 +106,7 @@ SimpleSeqTsHeader::GetSerializedSize (void) const
 	return GetHeaderSize();
 }
 uint32_t SimpleSeqTsHeader::GetHeaderSize(void){
-	return sizeof(m_seq) + sizeof(m_pg) + sizeof(m_bytesLeft) + IntHeader::GetStaticSize() + SpongeHeader::GetStaticSize();
+	return sizeof(m_seq) + sizeof(m_pg) + sizeof(m_bytesLeft) + IntHeader::GetStaticSize();
 }
 
 void
@@ -119,9 +119,6 @@ SimpleSeqTsHeader::Serialize (Buffer::Iterator start) const
 
   // write IntHeader
   ih.Serialize(i);
-
-  // write SpongeHeader
-  sh.Serialize(i);
 }
 uint32_t
 SimpleSeqTsHeader::Deserialize (Buffer::Iterator start)
@@ -133,8 +130,6 @@ SimpleSeqTsHeader::Deserialize (Buffer::Iterator start)
 
   // read IntHeader
   ih.Deserialize(i);
-  // read SpongeHeader
-  sh.Deserialize(i);
   return GetSerializedSize ();
 }
 

@@ -6,6 +6,7 @@
 #include <ns3/random-variable.h>
 #include <ns3/themis-loop-tag.h>
 #include <ns3/swift-hop-tag.h>
+#include <ns3/sponge-tag.h>
 #include "qbb-net-device.h"
 #include "switch-mmu.h"
 #include "pint.h"

@@ -7,7 +7,6 @@
 #include "ns3/header.h"
 #include "ns3/buffer.h"
 #include "ns3/int-header.h"
-#include "ns3/sponge-header.h"
 
 namespace ns3 {
 
@@ -42,7 +41,6 @@ public:
   void SetTs(uint64_t ts);
   void SetCnp();
   void SetIntHeader(const IntHeader &_ih);
-  void SetSpongeHeader(const SpongeHeader &_ih);
 
 //Getters
   /**
@@ -69,9 +67,7 @@ private:
   uint16_t flags;
   uint16_t m_pg;
   uint64_t m_seq; // the qbb sequence number.
-  IntHeader ih;
-  SpongeHeader sh;
-  
+  IntHeader ih;  
 };
 
 }; // namespace ns3

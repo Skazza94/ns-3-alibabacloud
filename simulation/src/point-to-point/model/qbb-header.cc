@@ -51,10 +51,6 @@ namespace ns3 {
 		ih = _ih;
 	}
 
-	void qbbHeader::SetSpongeHeader(const SpongeHeader &_sh){
-		sh = _sh;
-	}
-
 	uint16_t qbbHeader::GetPG() const
 	{
 		return m_pg;
@@ -100,7 +96,7 @@ namespace ns3 {
 	}
 	uint32_t qbbHeader::GetSerializedSize(void)  const
 	{
-		return GetBaseSize() + IntHeader::GetStaticSize() + SpongeHeader::GetStaticSize();
+		return GetBaseSize() + IntHeader::GetStaticSize();
 	}
 	uint32_t qbbHeader::GetBaseSize() {
 		qbbHeader tmp;
@@ -117,9 +113,6 @@ namespace ns3 {
 
 		// write IntHeader
 		ih.Serialize(i);
-
-		// write SpongeHeader
-		sh.Serialize(i);
 	}
 
 	uint32_t qbbHeader::Deserialize(Buffer::Iterator start)
@@ -133,9 +126,6 @@ namespace ns3 {
 
 		// read IntHeader
 		ih.Deserialize(i);
-
-		// read SpongeHeader
-		sh.Deserialize(i);
 
 		return GetSerializedSize();
 	}

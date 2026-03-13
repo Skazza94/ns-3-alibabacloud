@@ -500,7 +500,6 @@ namespace ns3 {
 		m_macRxTrace(packet);
 		CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
 		ch.getInt = 1; // parse INT header
-		ch.getSponge = 1; // parse Sponge header
 		packet->PeekHeader(ch);
 		if (ch.l3Prot == 0xFE){ // PFC
 			if (!m_qbbEnabled) return;

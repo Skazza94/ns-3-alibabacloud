@@ -259,18 +259,19 @@ namespace ns3
         CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
         p->RemoveHeader(ch);
 
-        ch.sip = ch.udp.sh.m_osip;
-        ch.dip = ch.udp.sh.m_odip;
-        ch.udp.sport = ch.udp.sh.m_osport;
-        ch.udp.dport = ch.udp.sh.m_odport;
-        ch.udp.pg = ch.udp.sh.m_opg;
+        /* Read and remove the SpongeTag */
+        SpongeTag st;
+        if (!p->RemovePacketTag(st)) {
+            /* Tag cannot be found, something weird happened, return. */
+            std::cout << "Sponge cannot forward a packet without SpongeTag!" << std::endl;
+            return nullptr;
+        }
 
-        ch.udp.sh.m_enabled = 0;
-        ch.udp.sh.m_osip = 0;
-        ch.udp.sh.m_odip = 0;
-        ch.udp.sh.m_osport = 0;
-        ch.udp.sh.m_odport = 0;
-        ch.udp.sh.m_opg = 0;
+        ch.sip = st.GetOriginalSrcIp();
+        ch.dip = st.GetOriginalDstIp();
+        ch.udp.sport = st.GetOriginalSrcPort();
+        ch.udp.dport = st.GetOriginalDstPort();
+        ch.udp.pg = st.GetOriginalPG();
 
         p->AddHeader(ch);
 
