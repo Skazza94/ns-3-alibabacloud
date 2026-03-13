@@ -12,7 +12,7 @@
 
 /* =============
 Improved SwitchNode class to support Nvidia-like per-packet ECMP Adaptive Routing and Fast NACKs (DCP-like) by Mariano Scazzariello.
-Sponge Deflection implementation by Mariano Scazzariello, PD-Quantile was implemented by Alexandra Udrescu.
+Sponge Deflection implementation by Mariano Scazzariello, PD-Quantile was implemented by Alexandra Udrescu and improved by Mariano Scazzariello.
 Themis implementation was imported/polished from original artifact: https://github.com/Networked-System-and-Security-Group/Themis/
 ================ */
 
@@ -64,7 +64,7 @@ class SwitchNode : public Node{
 	double m_u[pCnt];
 
 	/* PD-Quantile: per-egress histogram of remaining bytes for UDP packets */
-	std::map<uint64_t, uint32_t> m_bytesLeftDist[pCnt][qCnt];
+	std::map<uint64_t, uint32_t, std::greater<uint64_t>> m_bytesLeftDist[pCnt][qCnt];
 	uint32_t m_totalUdpPkts[pCnt][qCnt];
 
 protected:
@@ -82,6 +82,11 @@ protected:
 	/* Fast NACK knob */
 	bool m_fastNackEnable;
 
+	/* Fast CNPs knob */
+	bool m_fastCnpEnable;
+	Time m_cnpSendRateLimit = MicroSeconds(4);
+	std::map<CnpKey, Time> m_ecnDetector;
+
 	/* Sponge knobs */
 	bool m_spongeEnable;
 	std::vector<Ipv4Address> m_spongeIps;
@@ -98,9 +103,7 @@ protected:
 	bool m_themisEnable;
 	Time m_cnpMinGap = MicroSeconds(4);
 	Time m_cnpRecoverWindow = MicroSeconds(500);
-	Time m_cnpSendRateLimit = MicroSeconds(4);
-	std::map<CnpKey, CnpHandler> m_cnp_handler;
-	std::map<CnpKey, Time> m_ecn_detector;
+	std::map<CnpKey, CnpHandler> m_cnpHandler;
  	int m_recirculationIndex = pCnt;
 
 private:
@@ -123,7 +126,7 @@ private:
 	Ptr<Packet> DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch);
 	/* PD-Quantile */
 	double PDComputeQuantile(Ptr<Packet> p, uint32_t dev, uint32_t qIndex);
-	bool PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex);
+	bool PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex, uint32_t type);
 	/* Themis */
   	int ReceiveCnp(Ptr<Packet> p, CustomHeader &ch);
 public:
@@ -155,6 +158,9 @@ public:
 	 * time, sw_id, port_id, txBytes
 	 */
 	void PrintSwitchBw(FILE* bw_output, uint32_t bw_mon_interval);
+
+	/* PD-Quantile */
+	void PDLoadCandidates();
 
 	/* Themis */
 	void SetRecirculationPort(int idx) { m_recirculationIndex = idx; }

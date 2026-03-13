@@ -64,6 +64,11 @@ TypeId SwitchNode::GetTypeId (void)
 			BooleanValue(false),
 			MakeBooleanAccessor(&SwitchNode::m_fastNackEnable),
 			MakeBooleanChecker())
+	.AddAttribute("FastCnpEnable",
+			"If the packet is marked with ECN, generate a CNP for the sender.",
+			BooleanValue(false),
+			MakeBooleanAccessor(&SwitchNode::m_fastCnpEnable),
+			MakeBooleanChecker())
 	.AddAttribute("SpongeEnable",
 			"Enable the deflection instead of dropping a packet.",
 			BooleanValue(false),
@@ -264,33 +269,15 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 
 		/* PD-Quantile */
 		if (m_pdQuantileDeflectionEnable && ch.l3Prot == 0x11) {
-			if (PDShouldDeflect(p, (uint32_t)idx, qIndex)) {
-				if (!m_pdDeflectionCandidatesInit) {
-					/* Build candidate list of other switch-connected ports once */
-					for (uint32_t port = 0; port < m_devices.size(); ++port) {
-						if ((int)port == idx) continue;
-						Ptr<NetDevice> dev = m_devices[port];
-						Ptr<Channel> chn = dev->GetChannel();
-						if (!chn || chn->GetNDevices() != 2) continue;
-						Ptr<NetDevice> peer = (chn->GetDevice(0) == dev) ? chn->GetDevice(1) : chn->GetDevice(0);
-						if (!peer || !peer->GetNode()) continue;
-						if (peer->GetNode()->GetNodeType() == 1) {
-							m_pdDeflectionCandidates.push_back((int)port);
-						}
-					}
-
-					m_pdDeflectionCandidatesInit = true;
-				}
-				
+			if (PDShouldDeflect(p, (uint32_t)idx, qIndex, type)) {
 				bool redirected = false;
 				if (!m_pdDeflectionCandidates.empty()) {
 					uint32_t start = (uint32_t)(m_randomVariable.GetValue() * m_pdDeflectionCandidates.size());
 					for (uint32_t k = 0; k < m_pdDeflectionCandidates.size(); ++k) {
 						int alt = m_pdDeflectionCandidates[(start + k) % m_pdDeflectionCandidates.size()];
-						Ptr<NetDevice> dev = m_devices[alt];
-						if (!PDShouldDeflect(p, (uint32_t)alt, qIndex) && dev->IsLinkUp()) {
+						if ((int)alt == idx) continue;
+						if (!PDShouldDeflect(p, (uint32_t)alt, qIndex, type) && m_devices[alt]->IsLinkUp()) {
 							m_pdDeflectCb(0, GetId(), p, idx, alt, qIndex);
-							
 							idx = alt;
 							redirected = true;
 							break;
@@ -299,7 +286,6 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 				}
 				if (!redirected) {
 					m_pdDeflectCb(1, GetId(), p, idx, -1, qIndex);
-
 					return; /* Drop if no other port is available */
 				}
 			}
@@ -310,8 +296,8 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
   			int is_cnp = ReceiveCnp(p, ch);
   			if (!is_cnp) {
     			CnpKey fwdKey(ch.sip, ch.dip, ch.udp.pg, ch.udp.sport, ch.udp.dport);
-    			auto it = m_cnp_handler.find(fwdKey);
-				if (it != m_cnp_handler.end()) {
+    			auto it = m_cnpHandler.find(fwdKey);
+				if (it != m_cnpHandler.end()) {
 					CnpHandler &st = it->second;
 					ThemisLoopTag lt;
 					bool has = p->PeekPacketTag(lt);
@@ -524,8 +510,8 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 		}
 	}
 
-	/* Themis */
-	if (m_themisEnable && m_ecnEnabled) {
+	/* Fast CNP */
+	if (m_fastCnpEnable && m_ecnEnabled) {
   		CustomHeader ch2(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
  	 	p->PeekHeader(ch2);
 
@@ -545,12 +531,11 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
     		Ptr<QbbNetDevice> devIn = DynamicCast<QbbNetDevice>(m_devices[inDev]);
 
     		CnpKey k(ch2.sip, ch2.dip, ch2.udp.pg, ch2.udp.sport, ch2.udp.dport);
-    		auto it = m_ecn_detector.find(k);
-
+    		auto it = m_ecnDetector.find(k);
     		Time now = Simulator::Now();
-    		if (it == m_ecn_detector.end() || (now - it->second) >= m_cnpSendRateLimit) {
+    		if (it == m_ecnDetector.end() || (now - it->second) >= m_cnpSendRateLimit) {
       			devIn->SendCnp(p, ch2);
-      			m_ecn_detector[k] = now;
+      			m_ecnDetector[k] = now;
     		}
   		}
 	}
@@ -788,6 +773,19 @@ Ptr<Packet> SwitchNode::DoSpongePacket(Ptr<Packet> ori_pkt, CustomHeader &ch) {
 }
 
 /* PD-Quantile */
+void SwitchNode::PDLoadCandidates() {
+	for (uint32_t port = 0; port < m_devices.size(); ++port) {
+		Ptr<NetDevice> dev = m_devices[port];
+		Ptr<Channel> chn = dev->GetChannel();
+		if (!chn || chn->GetNDevices() != 2) continue;
+		Ptr<NetDevice> peer = (chn->GetDevice(0) == dev) ? chn->GetDevice(1) : chn->GetDevice(0);
+		if (!peer || !peer->GetNode()) continue;
+		if (peer->GetNode()->GetNodeType() == 1) {
+			m_pdDeflectionCandidates.push_back((int)port);
+		}
+	}
+}
+
 double SwitchNode::PDComputeQuantile(Ptr<Packet> p, uint32_t dev, uint32_t qIndex) {
 	CustomHeader ch(CustomHeader::L2_Header | CustomHeader::L3_Header | CustomHeader::L4_Header);
 	p->PeekHeader(ch);
@@ -802,7 +800,7 @@ double SwitchNode::PDComputeQuantile(Ptr<Packet> p, uint32_t dev, uint32_t qInde
 	return (double)count / (double)total;
 }
 
-bool SwitchNode::PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex) {
+bool SwitchNode::PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex, uint32_t type) {
 	double quant = PDComputeQuantile(p, dev, qIndex);
 	// clamp quant to [0,1]
 	if (quant < 0.0) quant = 0.0;
@@ -811,11 +809,11 @@ bool SwitchNode::PDShouldDeflect(Ptr<Packet> p, uint32_t dev, uint32_t qIndex) {
 	double f = 1.0 - m_pdQuantileAlphaThreshold * quant;
 	if (f < 0.0) f = 0.0;
 	if (f > 1.0) f = 1.0;
-	uint64_t queueCapacity = m_mmu->bufferPool / m_devices.size();
+	uint64_t queueCapacity = m_mmu->DynamicThreshold(dev, qIndex, "egress", type);
 	uint64_t threshold = (uint64_t)(f * (double)queueCapacity);
 	// current use of egress queue
 	uint64_t currentUsed = m_mmu->egress_bytes[dev][qIndex];
-	return currentUsed > threshold;
+	return (currentUsed + p->GetSize()) > threshold;
 }
 
 /* Themis */
@@ -839,9 +837,8 @@ int SwitchNode::ReceiveCnp(Ptr<Packet>p, CustomHeader &ch) {
 	if (!isCnp) return 0;
 
 	CnpKey key(ch.dip, ch.sip, pg, dport, sport);
-	auto it = m_cnp_handler.find(key);
-
-	if (it == m_cnp_handler.end()) {
+	auto it = m_cnpHandler.find(key);
+	if (it == m_cnpHandler.end()) {
 		CnpHandler h;
 		h.cnp_num = 0;
 		h.alpha = 5;
@@ -849,13 +846,12 @@ int SwitchNode::ReceiveCnp(Ptr<Packet>p, CustomHeader &ch) {
 		h.biggest = 1;
 		h.rec_time = Simulator::Now();
 		h.set_last_loop = Simulator::Now();
-		m_cnp_handler.emplace(key, h);
+		m_cnpHandler.emplace(key, h);
 		return 1;
 	}
 
 	CnpHandler &h = it->second;
 	h.recovered = 0;
-
 	if (Simulator::Now() - h.rec_time >= m_cnpMinGap) {
 		h.rec_time = Simulator::Now();
 		h.cnp_num += 1;
