@@ -25,6 +25,7 @@ namespace ns3
 
         void SetPort(Ptr<QbbNetDevice> dev);
         void PrintUtil(FILE *f, std::string ev);
+        void PrintSpongeBW(FILE *bw_output, uint32_t bw_mon_interval);
 
     protected:
         void NotifyConstructionCompleted() override;
@@ -43,6 +44,9 @@ namespace ns3
         /* For PAUSE_WHILE_BUSY */
         Time m_minGap = MicroSeconds(2);
         Time m_forceAfter = MicroSeconds(500);
+        Time m_maxBackoffGap = MicroSeconds(200);
+        uint32_t m_forceRounds = 3;
+        uint32_t m_maxBackoffShift = 6;
 
         /* Statistics */
         uint64_t m_qPkts = 0;
@@ -53,19 +57,25 @@ namespace ns3
         uint64_t m_dropBytes = 0;
         uint64_t m_txPkts = 0;
         uint64_t m_txBytes = 0;
+        uint64_t m_lastTxBytes = 0;
 
         /* Runtime variables */
         Ptr<QbbNetDevice> m_dev;
         Ptr<SimpleDropTailQueue> m_queue;
         EventId m_armEvent;
+        bool m_txGateOpen = true;
+        uint32_t m_sentInBurst = 0;
         /* For THROTTLE_ON_LOAD */
         bool m_rxSinceLastTx = false;
         Time m_throttle = MicroSeconds(0);
-        bool m_txGateOpen = true;
-        uint32_t m_sentInBurst = 0;
         /* For PAUSE_WHILE_BUSY */
+        EventId m_forceEvent;
+        bool m_forceMode = false;
         Time m_lastRxTime = Seconds(0);
-        Time m_firstEnqTime = Seconds(0);
+        uint32_t m_pauseRound = 0;
+        uint32_t m_failedRounds = 0;
+        uint32_t m_goodRounds = 0;
+        bool m_probeBurst = false;
 
         /* Trace callbacks */
         TracedCallback<Ptr<const Packet>, Ptr<SpongeNode>> m_spongeRx;
@@ -80,8 +90,12 @@ namespace ns3
         void EvaluateThrottle();
         /* For THROTTLE_ON_LOAD, transmit after throttle time */
         void TryDrainAfterThrottle();
+        /* For PAUSE_WHILE_BUSY, compute what is the gap timer to use considering backoff */
+        Time GetBackoffGap() const;
         /* For PAUSE_WHILE_BUSY, start draining if timer allows */
-        void TryStartDrain();
+        void TryStartDrain(bool makeProbe);
+        /* For PAUSE_WHILE_BUSY, start force draining */
+        void ForceStartDrain();
 
         Ptr<Packet> GetNxtPkt(Ptr<RdmaQueuePair> qp);
     };

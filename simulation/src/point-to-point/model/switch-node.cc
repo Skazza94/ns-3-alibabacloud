@@ -14,7 +14,6 @@
 #include "ns3/simulator.h"
 #include "ns3/priority-tag.h"
 #include "ns3/simple-seq-ts-header.h"
-
 #include <cmath>
 
 namespace ns3 {
@@ -280,6 +279,13 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 							m_pdDeflectCb(0, GetId(), p, idx, alt, qIndex);
 							idx = alt;
 							redirected = true;
+							
+							/* Count deflections */
+							DeflectionTag dTag; 
+							p->RemovePacketTag(dTag); 
+							dTag.Increment(); 
+							p->AddPacketTag(dTag);
+							
 							break;
 						}
 					}
@@ -366,6 +372,12 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 				SpongeTag st;
 				bool deflected = false;
 				if (m_spongeEnable && ch.l3Prot == 0x11 && !p->PeekPacketTag(st)) {
+					/* Count deflections */
+					DeflectionTag dTag; 
+					p->RemovePacketTag(dTag); 
+					dTag.Increment(); 
+					p->AddPacketTag(dTag);
+					
 					/* Generate the packet for the sponge */
 					p = DoSpongePacket(p, ch);
 					/* Peek again ch (it changed) */

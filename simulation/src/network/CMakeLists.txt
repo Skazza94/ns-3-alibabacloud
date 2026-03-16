@@ -78,6 +78,8 @@ set(source_files
     utils/themis-loop-tag.cc
     utils/swift-hop-tag.cc
     utils/sponge-tag.cc
+    utils/deflection-tag.cc
+    utils/retransmission-tag.cc
 )
 
 set(header_files
@@ -164,6 +166,8 @@ set(header_files
     utils/themis-loop-tag.h
     utils/swift-hop-tag.h
     utils/sponge-tag.h
+    utils/deflection-tag.h
+    utils/retransmission-tag.h
 )
 
 build_lib(

@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <ns3/node.h>
 #include <ns3/random-variable.h>
+#include <ns3/deflection-tag.h>
 #include <ns3/themis-loop-tag.h>
 #include <ns3/swift-hop-tag.h>
 #include <ns3/sponge-tag.h>

@@ -9,6 +9,8 @@
 #include "ns3/data-rate.h"
 #include "ns3/pointer.h"
 #include "ns3/priority-tag.h"
+#include "ns3/retransmission-tag.h"
+#include "ns3/deflection-tag.h"
 #include "rdma-hw.h"
 #include "ppp-header.h"
 #include "qbb-header.h"
@@ -561,6 +563,27 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 		}
 	}
 
+	/* Goodput accounting */
+	/* Track cumulative delivery before RX-seq processing */
+	uint64_t oldNextExpected = rxQp->ReceiverNextExpectedSeq;
+	/* RX packet tags */
+	DeflectionTag dTag;
+	bool hasDeflection = p->RemovePacketTag(dTag);
+	uint16_t nDefl = hasDeflection ? dTag.GetDeflections() : 0;
+	RetransmissionTag rtxTag;
+	bool hasRtx = p->RemovePacketTag(rtxTag);
+	uint32_t nRtx = hasRtx ? rtxTag.GetRetransmissions() : 0;
+
+	auto it = rxQp->m_rxPktMeta.find(ch.udp.seq);
+	if (it == rxQp->m_rxPktMeta.end()) {
+		if (!rxQp->CheckPsnExists(ch.udp.seq) && ch.udp.seq >= rxQp->ReceiverNextExpectedSeq) {
+			rxQp->m_rxPktMeta[ch.udp.seq] = RdmaRxQueuePair::RxPktMeta(payload_size, nDefl, nRtx);
+		}
+	} else {
+		it->second.rtx = std::max<uint32_t>(it->second.rtx, nRtx);
+		it->second.deflections = std::max<uint32_t>(it->second.deflections, nDefl);
+	}
+
 	/* OOO Reorder Enabled, use different logic */
 	int x, toAck, toNack;
     if (rxQp->m_oooReorderEnable) {
@@ -568,6 +591,13 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
     } else {
 		std::tie(x, toAck, toNack) = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);
 	}
+
+	/* Goodput accounting */
+	uint64_t newNextExpected = rxQp->ReceiverNextExpectedSeq;
+	if (newNextExpected > oldNextExpected) {
+		rxQp->TrackDeliveredRx(oldNextExpected, newNextExpected);
+	}
+
 	if (x == 1 || x == 2){ //generate ACK or NACK
 		qbbHeader seqh;
 		seqh.SetSeq((x == 1) ? toAck : toNack);
@@ -865,6 +895,8 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 			/* If RTX are enabled, clear the TX timestamps */
 			qp->ClearTxTimesBelowPsn(seq);
 		}
+
+		qp->ClearTxRtxCountBelowPsn(seq);
 	}
 
 	if (m_ack_interval > 0) {
@@ -1138,6 +1170,7 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 	uint64_t seq_to_send = 0;
 	uint64_t payload_size = 0;
 
+	bool is_rtx = false;
 	if (!qp->m_retransmissionBuffer.empty()) {
 		// Send from the retransmission list
 		auto it = qp->m_retransmissionBuffer.begin();
@@ -1146,6 +1179,8 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
 
 		seq_to_send = value.first;
 		payload_size = value.second;
+
+		is_rtx = true;
 	} else {
 		// Send the next packet
 		seq_to_send = qp->snd_nxt;
@@ -1228,6 +1263,17 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp){
       	p->AddPacketTag(hop_tag);
 	}
 
+	uint16_t nRtx = 0;
+	if (is_rtx) {
+		qp->IncrementTxRtxCount(seq_to_send);
+		nRtx = qp->GetTxRtxCount(seq_to_send);
+	} else {
+		nRtx = qp->GetTxRtxCount(seq_to_send);
+	}
+	RetransmissionTag rtx_tag;
+	rtx_tag.SetRetransmissions(nRtx);
+	p->AddPacketTag(rtx_tag);
+
 	// return
 	return p;
 }
@@ -1284,6 +1330,47 @@ void RdmaHw::PrintHostBW(FILE* bw_output, uint32_t bw_mon_interval){
 }
 /**
  * output format:
+ * time, sip, dip, sport, dport, pg, unique_bytes, rtx_bytes, deflected_bytes
+*/
+void RdmaHw::PrintGoodput(FILE* goodput_output) {
+	for (auto &item : m_rxQpMap) {
+		Ptr<RdmaRxQueuePair> rxQp = item.second;
+		if (rxQp->m_rxUniqueBytes != rxQp->m_lastRxUniqueBytes || rxQp->m_rxRtxBytes != rxQp->m_lastRxRtxBytes || rxQp->m_rxDeflectionBytes != rxQp->m_lastRxDeflectionBytes) {
+			uint16_t pg = (item.first >> 16) & 0xFFFF;
+
+			uint64_t uniqueDelta = rxQp->m_rxUniqueBytes - rxQp->m_lastRxUniqueBytes;
+			uint64_t rtxDelta = rxQp->m_rxRtxBytes - rxQp->m_lastRxRtxBytes;
+			uint64_t deflectionDelta = rxQp->m_rxDeflectionBytes - rxQp->m_lastRxDeflectionBytes;
+
+			fprintf(goodput_output, "%lu, %08x, %08x, %u, %u, %u, %lu, %lu, %lu\n", Simulator::Now().GetTimeStep(), rxQp->dip, rxQp->sip, rxQp->dport, rxQp->sport, pg, uniqueDelta, rtxDelta, deflectionDelta);
+			fflush(goodput_output);
+		}
+		
+		rxQp->m_lastRxUniqueBytes = rxQp->m_rxUniqueBytes;
+		rxQp->m_lastRxRtxBytes = rxQp->m_rxRtxBytes;
+		rxQp->m_lastRxDeflectionBytes = rxQp->m_rxDeflectionBytes;
+	}
+}
+/**
+ * output format:
+ * sip dip sport dport pg nbuckets count0 count1 count2 ...
+ * nbuckets = max deflection count seen + 1
+ * count[i] = number of packets delivered with exactly i deflections
+*/
+void RdmaHw::PrintDeflectionHistogram(FILE* deflection_histogram_output, uint32_t dip, uint16_t dport, uint16_t pg) {
+	Ptr<RdmaRxQueuePair> rxQp = GetRxQp(0, dip, 0, dport, pg, false);
+	if (rxQp->m_deflectionHistogram.empty()) {
+		return;
+	}
+	fprintf(deflection_histogram_output, "%08x %08x %u %u %u %zu", rxQp->dip, rxQp->sip, rxQp->dport, rxQp->sport, pg, rxQp->m_deflectionHistogram.size());
+	for (uint64_t cnt : rxQp->m_deflectionHistogram) {
+		fprintf(deflection_histogram_output, " %lu", cnt);
+	}
+	fprintf(deflection_histogram_output, "\n");
+	fflush(deflection_histogram_output);
+}
+/**
+ * output format:
  * time, src, dst, sport, dport, size, rate
 */
 void RdmaHw::PrintQPRate(FILE* rate_output){
@@ -1294,7 +1381,7 @@ void RdmaHw::PrintQPRate(FILE* rate_output){
 		if(qp->m_rate.GetBitRate() == last_qp_rate[key]){
 			continue;
 		}
-		fprintf(rate_output, "%lu, %u, %u, %u, %u, %u, %lu\n", Simulator::Now().GetTimeStep(), qp->m_src, qp->m_dest, qp->sport, qp->dport, qp->m_size, qp->m_rate.GetBitRate());
+		fprintf(rate_output, "%lu, %u, %u, %u, %u, %lu, %lu\n", Simulator::Now().GetTimeStep(), qp->m_src, qp->m_dest, qp->sport, qp->dport, qp->m_size, qp->m_rate.GetBitRate());
 		fflush(rate_output);
 		last_qp_rate[key] = qp->m_rate.GetBitRate();
 	}

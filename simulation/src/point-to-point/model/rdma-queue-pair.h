@@ -144,6 +144,11 @@ public:
 	std::map<uint64_t, uint32_t> m_retransmissionBuffer; // PSNs to retransmit
 	EventId m_senderTimer; // Sender timer
 	void PopulateRetransmissionBuffer(uint64_t seq);
+	/* For goodput measurement */
+	std::map<uint64_t, uint32_t> m_rtxCount; 
+	void IncrementTxRtxCount(uint64_t seq);
+	uint32_t GetTxRtxCount(uint64_t seq) const;
+	void ClearTxRtxCountBelowPsn(uint64_t psn);
 
 	/* OOO Reorder */
 	bool m_oooReorderEnable;
@@ -195,6 +200,28 @@ public:
 	/* OOO Reorder */
 	bool m_oooReorderEnable;
 	uint64_t m_lastAckedSeq = 0; // Keeps track of the last ACKed pkt
+
+	/* Goodput accounting */
+	/* RX metadata */
+	struct RxPktMeta {
+		uint32_t size;
+		uint32_t deflections;
+		uint32_t rtx;
+
+		RxPktMeta() : size(0), deflections(0), rtx(0) {}
+		RxPktMeta(uint32_t s, uint32_t d, uint32_t r) : size(s), deflections(d), rtx(r) {}
+	};
+	std::map<uint32_t, RxPktMeta> m_rxPktMeta;
+	void TrackDeliveredRx(uint32_t oldNextExpected, uint32_t newNextExpected);
+	/* Counters: bytes received per category */
+	uint64_t m_rxUniqueBytes = 0;
+	uint64_t m_rxRtxBytes = 0;
+	uint64_t m_rxDeflectionBytes = 0;
+	uint64_t m_lastRxUniqueBytes = 0;
+	uint64_t m_lastRxRtxBytes = 0;
+	uint64_t m_lastRxDeflectionBytes = 0;
+	/* Deflection histogram: index = deflection count, value = packet count */
+	std::vector<uint64_t> m_deflectionHistogram;
 };
 
 class RdmaQueuePairGroup : public Object {

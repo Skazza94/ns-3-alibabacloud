@@ -22,6 +22,11 @@ namespace ns3
                                               StringValue("4096MB"),
                                               MakeStringAccessor(&SpongeNode::m_bufSize),
                                               MakeStringChecker())
+                                .AddAttribute("PacketsPerBurst",
+                                              "Packets to bounce for each burst (for ThrottleOnLoad and PauseWhileBusy).",
+                                              UintegerValue(64),
+                                              MakeUintegerAccessor(&SpongeNode::m_burstSize),
+                                              MakeUintegerChecker<uint32_t>())
                                 .AddAttribute("BounceDelay",
                                               "For FlushOnSilence, time to wait before starting bounce packets.",
                                               TimeValue(Time("100us")),
@@ -37,11 +42,6 @@ namespace ns3
                                               TimeValue(Time("200us")),
                                               MakeTimeAccessor(&SpongeNode::m_maxStep),
                                               MakeTimeChecker())
-                                .AddAttribute("PacketsPerBurst",
-                                              "For ThrottleOnLoad, packets to bounce for each burst.",
-                                              UintegerValue(64),
-                                              MakeUintegerAccessor(&SpongeNode::m_burstSize),
-                                              MakeUintegerChecker<uint32_t>())
                                 .AddAttribute("PauseGap",
                                               "For PauseWhileBusy, gap to wait before starting bounce packets.",
                                               TimeValue(Time("2us")),
@@ -52,6 +52,21 @@ namespace ns3
                                               TimeValue(Time("500us")),
                                               MakeTimeAccessor(&SpongeNode::m_forceAfter),
                                               MakeTimeChecker())
+                                .AddAttribute("PauseMaxBackoffGap",
+                                              "For PauseWhileBusy, max quiet-gap after exponential backoff.",
+                                              TimeValue(Time("200us")),
+                                              MakeTimeAccessor(&SpongeNode::m_maxBackoffGap),
+                                              MakeTimeChecker())
+                                .AddAttribute("PauseForceRounds",
+                                              "For PauseWhileBusy, number of failed probe/wait rounds before force mode is allowed.",
+                                              UintegerValue(3),
+                                              MakeUintegerAccessor(&SpongeNode::m_forceRounds),
+                                              MakeUintegerChecker<uint32_t>())
+                                .AddAttribute("PauseMaxBackoffShift",
+                                              "For PauseWhileBusy, max number of exponential backoff doublings.",
+                                              UintegerValue(6),
+                                              MakeUintegerAccessor(&SpongeNode::m_maxBackoffShift),
+                                              MakeUintegerChecker<uint32_t>())
                                 .AddTraceSource("SpongeRx",
                                                 "Packet received by sponge.",
                                                 MakeTraceSourceAccessor(&SpongeNode::m_spongeRx),
@@ -132,17 +147,41 @@ namespace ns3
             }
             break;
         case PAUSE_WHILE_BUSY:
-            m_lastRxTime = Simulator::Now();
+            Time now = Simulator::Now();
+            m_lastRxTime = now;
+
+            /* Queue just became non-empty: start a new pause epoch */
             if (m_queue->GetNPackets() == 1)
             {
-                m_firstEnqTime = Simulator::Now();
-            }
+                m_forceMode = false;
+                m_sentInBurst = 0;
+                m_txGateOpen = true;
+                m_pauseRound = 0;
+                m_failedRounds = 1;
+                m_goodRounds = 0;
 
-            if (m_armEvent.IsRunning())
-            {
-                m_armEvent.Cancel();
+                if (m_armEvent.IsRunning())
+                {
+                    m_armEvent.Cancel();
+                }
+                m_armEvent = Simulator::Schedule(GetBackoffGap(), &SpongeNode::TryStartDrain, this, true);
+                if (m_forceEvent.IsRunning())
+                {
+                    m_forceEvent.Cancel();
+                }
+                m_forceEvent = Simulator::Schedule(m_forceAfter, &SpongeNode::ForceStartDrain, this);
             }
-            m_armEvent = Simulator::Schedule(m_minGap, &SpongeNode::TryStartDrain, this);
+            else
+            {
+                if (m_txGateOpen)
+                {
+                    if (m_armEvent.IsRunning())
+                    {
+                        m_armEvent.Cancel();
+                    }
+                    m_armEvent = Simulator::Schedule(GetBackoffGap(), &SpongeNode::TryStartDrain, this, true);
+                }
+            }
             break;
         }
 
@@ -195,31 +234,92 @@ namespace ns3
         }
     }
 
+    /* For PAUSE_WHILE_BUSY, compute what is the gap timer to use considering backoff */
+    Time SpongeNode::GetBackoffGap() const
+    {
+        uint32_t shift = std::min(m_pauseRound, m_maxBackoffShift);
+        Time gap = m_minGap;
+
+        for (uint32_t i = 0; i < shift; ++i)
+        {
+            gap = gap + gap;
+            if (gap >= m_maxBackoffGap)
+            {
+                return m_maxBackoffGap;
+            }
+        }
+
+        return std::min(gap, m_maxBackoffGap);
+    }
+
     /* For PAUSE_WHILE_BUSY, start draining if timer allows */
-    void SpongeNode::TryStartDrain()
+    void SpongeNode::TryStartDrain(bool makeProbe)
     {
         if (m_queue->IsEmpty())
             return;
 
         Time now = Simulator::Now();
-        /* Force flush if queue has been non-empty too long */
-        if (now - m_firstEnqTime >= m_forceAfter)
+        Time gap = GetBackoffGap();
+        if (now - m_lastRxTime >= gap)
         {
-            m_dev->TriggerTransmit();
-            return;
-        }
+            m_txGateOpen = false;
+            m_sentInBurst = 0;
+            m_probeBurst = makeProbe;
 
-        if (now - m_lastRxTime >= m_minGap)
-        {
-            /* Gap time has passed (no packet RX in the meantime), we can transmit */
+            if (m_forceEvent.IsRunning())
+            {
+                m_forceEvent.Cancel();
+            }
+
             m_dev->TriggerTransmit();
         }
         else
         {
-            /* Still busy, check again after remaining gap */
-            Time left = m_minGap - (now - m_lastRxTime);
-            m_armEvent = Simulator::Schedule(left, &SpongeNode::TryStartDrain, this);
+            if (m_armEvent.IsRunning())
+            {
+                m_armEvent.Cancel();
+            }
+            Time left = gap - (now - m_lastRxTime);
+            m_armEvent = Simulator::Schedule(left, &SpongeNode::TryStartDrain, this, makeProbe);
         }
+    }
+
+    /* For PAUSE_WHILE_BUSY, start force draining */
+    void SpongeNode::ForceStartDrain()
+    {
+        if (m_queue->IsEmpty())
+            return;
+
+        if (m_failedRounds < m_forceRounds)
+        {
+            /* Not enough failed waiting phases yet: keep waiting, but back off more */
+            m_pauseRound++;
+            m_failedRounds++;
+
+            if (m_armEvent.IsRunning())
+            {
+                m_armEvent.Cancel();
+            }
+            m_armEvent = Simulator::Schedule(GetBackoffGap(), &SpongeNode::TryStartDrain, this, true);
+            if (m_forceEvent.IsRunning())
+            {
+                m_forceEvent.Cancel();
+            }
+            m_forceEvent = Simulator::Schedule(m_forceAfter, &SpongeNode::ForceStartDrain, this);
+            return;
+        }
+
+        m_forceMode = true;
+        m_txGateOpen = false;
+        m_sentInBurst = 0;
+        m_probeBurst = true;
+
+        if (m_armEvent.IsRunning())
+        {
+            m_armEvent.Cancel();
+        }
+
+        m_dev->TriggerTransmit();
     }
 
     Ptr<Packet> SpongeNode::GetNxtPkt(Ptr<RdmaQueuePair> qp)
@@ -238,6 +338,102 @@ namespace ns3
             return nullptr;
         }
 
+        if (m_mode == PAUSE_WHILE_BUSY)
+        {
+            Time now = Simulator::Now();
+            /* Before force timeout expires, pause again if arrivals are still recent */
+            Time gap = GetBackoffGap();
+            if (!m_forceMode && (now - m_lastRxTime < gap))
+            {
+                m_txGateOpen = true;
+                m_sentInBurst = 0;
+                m_goodRounds = 0;
+                m_pauseRound++;
+                m_failedRounds++;
+
+                if (m_armEvent.IsRunning())
+                {
+                    m_armEvent.Cancel();
+                }
+                Time left = gap - (now - m_lastRxTime);
+                m_armEvent = Simulator::Schedule(left, &SpongeNode::TryStartDrain, this, true);
+                if (m_forceEvent.IsRunning())
+                {
+                    m_forceEvent.Cancel();
+                }
+                m_forceEvent = Simulator::Schedule(m_forceAfter, &SpongeNode::ForceStartDrain, this);
+                return nullptr;
+            }
+
+            uint32_t burstLimit = m_probeBurst ? 1 : ((m_goodRounds < 2) ? (m_burstSize / 2) : m_burstSize);
+            if (m_sentInBurst >= burstLimit)
+            {
+                bool wasProbeBurst = m_probeBurst;
+
+                m_txGateOpen = true;
+                m_sentInBurst = 0;
+
+                if (m_armEvent.IsRunning())
+                {
+                    m_armEvent.Cancel();
+                }
+                if (m_forceEvent.IsRunning())
+                {
+                    m_forceEvent.Cancel();
+                }
+
+                if (m_forceMode)
+                {
+                    /* Force mode only buys one burst, then fall back to normal logic */
+                    m_forceMode = false;
+                }
+                else if (!wasProbeBurst)
+                {
+                    /* A completed non-probe burst is partial success, so relax backoff a bit */
+                    if (m_pauseRound > 0)
+                    {
+                        m_pauseRound--;
+                    }
+                }
+
+                m_probeBurst = false;
+
+                Time gap = GetBackoffGap();
+                Time now = Simulator::Now();
+                Time sinceLastRx = now - m_lastRxTime;
+
+                if (wasProbeBurst)
+                {
+                    /* Probe got sent just now. Even if nothing has arrived yet, that does NOT mean the path is clear; the probe may not have had time to bounce back yet. So always wait a fresh full gap. */
+                    m_armEvent = Simulator::Schedule(gap, &SpongeNode::TryStartDrain, this, false);
+                    m_forceEvent = Simulator::Schedule(m_forceAfter, &SpongeNode::ForceStartDrain, this);
+
+                    /* A good probe is only weak evidence. */
+                    m_goodRounds = 1;
+                }
+                else
+                {
+                    m_goodRounds++;
+
+                    /* For normal bursts, accelerate if the path has already been quiet long enough; otherwise wait only the remaining gap. */
+                    if (m_goodRounds >= 2 && sinceLastRx >= gap)
+                    {
+                        /* Only accelerate after 2 consecutive good rounds. */
+                        m_txGateOpen = false;
+                        m_dev->TriggerTransmit();
+                    }
+                    else
+                    {
+                        Time left = (sinceLastRx >= gap) ? Time(0) : (gap - sinceLastRx);
+                        m_armEvent = Simulator::Schedule(left, &SpongeNode::TryStartDrain, this, false);
+                        m_forceEvent = Simulator::Schedule(m_forceAfter, &SpongeNode::ForceStartDrain, this);
+                    }
+                }
+
+                return nullptr;
+            }
+        }
+
         Ptr<Packet> p = m_queue->Dequeue();
         if (p == 0)
         {
@@ -245,6 +441,25 @@ namespace ns3
             {
                 m_sentInBurst = 0;
                 EvaluateThrottle();
+            }
+            else if (m_mode == PAUSE_WHILE_BUSY)
+            {
+                m_txGateOpen = true;
+                m_forceMode = false;
+                m_sentInBurst = 0;
+                m_pauseRound = 0;
+                m_failedRounds = 0;
+                m_goodRounds = 0;
+                m_probeBurst = false;
+
+                if (m_armEvent.IsRunning())
+                {
+                    m_armEvent.Cancel();
+                }
+                if (m_forceEvent.IsRunning())
+                {
+                    m_forceEvent.Cancel();
+                }
             }
 
             return nullptr;
@@ -261,7 +476,8 @@ namespace ns3
 
         /* Read and remove the SpongeTag */
         SpongeTag st;
-        if (!p->RemovePacketTag(st)) {
+        if (!p->RemovePacketTag(st))
+        {
             /* Tag cannot be found, something weird happened, return. */
             std::cout << "Sponge cannot forward a packet without SpongeTag!" << std::endl;
             return nullptr;
@@ -286,5 +502,19 @@ namespace ns3
     {
         fprintf(f, "%lu, %u, %s, %lu, %lu, %lu, %lu, %lu, %lu, %lu, %lu\n", Simulator::Now().GetTimeStep(), GetId(), ev.c_str(), m_qPkts, m_qBytes, m_rxPkts, m_rxBytes, m_dropPkts, m_dropBytes, m_txPkts, m_txBytes);
         fflush(f);
+    }
+
+    void SpongeNode::PrintSpongeBW(FILE *bw_output, uint32_t bw_mon_interval)
+    {
+        if (m_txBytes == m_lastTxBytes)
+        {
+            return;
+        }
+
+        double bw = (m_txBytes - m_lastTxBytes) * 8 * 1e6 / (bw_mon_interval);
+        bw = bw * 1.0 / 1e9;
+        fprintf(bw_output, "%lu, %u, %u, %f\n", Simulator::Now().GetTimeStep(), GetId(), 1, bw);
+        fflush(bw_output);
+        m_lastTxBytes = m_txBytes;
     }
 }

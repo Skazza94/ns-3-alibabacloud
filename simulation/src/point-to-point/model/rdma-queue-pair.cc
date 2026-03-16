@@ -291,6 +291,24 @@ void RdmaQueuePair::PopulateRetransmissionBuffer(uint64_t seq) {
 	m_retransmissionBuffer.emplace(seq, size);
 }
 
+/* For goodput measurement */
+void RdmaQueuePair::IncrementTxRtxCount(uint64_t seq) {
+    auto &cnt = m_rtxCount[seq];
+    if (cnt < std::numeric_limits<uint32_t>::max()) {
+        cnt++;
+    }
+}
+
+uint32_t RdmaQueuePair::GetTxRtxCount(uint64_t seq) const {
+    auto it = m_rtxCount.find(seq);
+    return (it == m_rtxCount.end()) ? 0 : it->second;
+}
+
+void RdmaQueuePair::ClearTxRtxCountBelowPsn(uint64_t psn) {
+    auto first_keep = m_rtxCount.lower_bound(psn);
+    m_rtxCount.erase(m_rtxCount.begin(), first_keep);
+}
+
 /*********************
  * RdmaRxQueuePair
  ********************/
@@ -410,6 +428,27 @@ RdmaRxQueuePair::SrPsnResult RdmaRxQueuePair::AdvancePsnContiguous() {
     //     << std::endl;
 
     return res;
+}
+
+void RdmaRxQueuePair::TrackDeliveredRx(uint32_t oldNextExpected, uint32_t newNextExpected) {
+	for (uint32_t psn = oldNextExpected; psn < newNextExpected; ) {
+		auto it = m_rxPktMeta.find(psn);
+		if (it == m_rxPktMeta.end()) {
+			break;
+		}
+
+		const RxPktMeta &meta = it->second;
+		m_rxUniqueBytes += meta.size;
+		m_rxDeflectionBytes += (uint64_t)meta.deflections * meta.size;
+		m_rxRtxBytes += (uint64_t)meta.rtx * meta.size;
+		if (meta.deflections >= m_deflectionHistogram.size()) {
+			m_deflectionHistogram.resize(meta.deflections + 1, 0);
+		}
+		m_deflectionHistogram[meta.deflections]++;
+
+		psn += meta.size;
+		m_rxPktMeta.erase(it);
+	}
 }
 
 /*********************

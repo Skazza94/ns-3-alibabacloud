@@ -85,6 +85,8 @@ public:
 	std::unordered_map<uint64_t, uint64_t> last_qp_rate; // last sampling value key of qp ---> sending rate
 	void UpdateTxBytes(uint32_t port_id, uint64_t bytes);
 	void PrintHostBW(FILE* bw_output, uint32_t bw_mon_interval);
+	void PrintGoodput(FILE* goodput_output);
+	void PrintDeflectionHistogram(FILE* deflection_histogram_output, uint32_t dip, uint16_t dport, uint16_t pg);
 	void PrintQPRate(FILE* rate_output);
 	void PrintQPCnpNumber(FILE* cnp_output);
 
