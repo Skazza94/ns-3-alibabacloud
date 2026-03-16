@@ -97,10 +97,14 @@ void NVSwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 		p->PeekPacketTag(t);
 		uint32_t inDev = t.GetFlowId();
 		if (qIndex != 0){ //not highest priority
-			m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize(), type);
-			m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize(), type);
-			m_bytes[inDev][idx][qIndex] += p->GetSize();
+			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), type) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), type)){			// Admission control
+				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize(), type);
+				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize(), type);
+			}else{
+				return; // Drop
+			}
 		}
+		m_bytes[inDev][idx][qIndex] += p->GetSize();
 		m_devices[idx]->SwitchSend(qIndex, p, ch);
 	}else
 	{
