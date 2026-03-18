@@ -881,7 +881,7 @@ int SwitchNode::ReceiveCnp(Ptr<Packet>p, CustomHeader &ch) {
 
 // for monitor
 /**
- * outoput format:
+ * output format:
  * time, sw_id, port_id, q_id, qlen, port_len
 */
 void SwitchNode::PrintSwitchQlen(FILE* qlen_output){
@@ -903,7 +903,7 @@ void SwitchNode::PrintSwitchQlen(FILE* qlen_output){
 }
 
 /**
- * outoput format:
+ * output format:
  * time, sw_id, port_id, bandwidth
 */
 void SwitchNode::PrintSwitchBw(FILE* bw_output, uint32_t bw_mon_interval){
@@ -917,6 +917,22 @@ void SwitchNode::PrintSwitchBw(FILE* bw_output, uint32_t bw_mon_interval){
 		fprintf(bw_output, "%lu, %u, %u, %f\n", Simulator::Now().GetTimeStep(), m_id, i, bw);
 		fflush(bw_output);
 		last_txBytes[i] = m_txBytes[i];
+	}	
+}
+
+/**
+* output format:
+* time, node_id, port_id, total_tx_bytes
+*/
+void SwitchNode::PrintSwitchTxBytes(FILE* tx_output) {
+	uint32_t n_dev = this->GetNDevices();
+	for (uint32_t i = 1; i < n_dev; ++i) {
+		if (last_txBytesC[i] == m_txBytes[i]) {
+			continue;
+		}
+		fprintf(tx_output, "%lu, %u, %u, %lu\n", Simulator::Now().GetTimeStep(), m_id, i, m_txBytes[i] - last_txBytesC[i]);
+		fflush(tx_output);
+		last_txBytesC[i] = m_txBytes[i];
 	}	
 }
 

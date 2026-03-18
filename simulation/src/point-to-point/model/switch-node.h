@@ -148,18 +148,25 @@ public:
 	
 	// for monitor
 	uint64_t last_txBytes[pCnt]; // last sampling of the counter of tx bytes
+	uint64_t last_txBytesC[pCnt]; // last sampling of the counter of tx bytes for tx bytes file
 	uint64_t last_port_qlen[pCnt]; // last sampling of the port length
 	
 	/**
-	 * outoput format:
+	 * output format:
 	 * time, sw_id, port_id, q_id, qlen, port_len
 	 */
 	void PrintSwitchQlen(FILE* qlen_output);
 	/**
-	 * outoput format:
+	 * output format:
 	 * time, sw_id, port_id, txBytes
 	 */
 	void PrintSwitchBw(FILE* bw_output, uint32_t bw_mon_interval);
+
+	/**
+	 * output format:
+	 * time, node_id, port_id, total_tx_bytes
+	 */
+	void PrintSwitchTxBytes(FILE* tx_output);
 
 	/* PD-Quantile */
 	void PDLoadCandidates();
